@@ -403,12 +403,11 @@ def make_gauge_figure(aqi_value: float, category: str, color: str) -> go.Figure:
         },
         gauge={
             "axis": {
-                "range":     [0, 500],
-                "tickvals":  [0, 50, 100, 150, 200, 300, 500],
-                "ticktext":  ["0", "50", "100", "150", "200", "300", "500"],
+                "range":    [0, 500],
+                "tickvals": [0, 50, 100, 150, 200, 300, 500],
+                "ticktext": ["0", "50", "100", "150", "200", "300", "500"],
                 "tickcolor": "#374151",
-                "tickfont":  {"size": 10, "color": "#6b7280"},
-                "gridcolor": "#1f2937",
+                "tickfont": {"size": 10, "color": "#6b7280"},
             },
             "bar": {
                 "color":     color,
@@ -535,6 +534,7 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
         xaxis=dict(
             tickformat="%b %-d\n%-I%p",
             tickcolor="#374151",
+            gridcolor="#1f2937",
             showgrid=True,
             zeroline=False,
             tickfont=dict(size=9, color="#6b7280"),

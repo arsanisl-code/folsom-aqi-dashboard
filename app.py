@@ -754,7 +754,7 @@ def render_about():
             &bull; Weather inputs: Open-Meteo historical and forecast API<br>
             &bull; Training data: 2022–present, Folsom monitoring station<br><br>
             <em>Presented at FLC Los Rios STEM Fair 2026</em><br>
-            <em>Built by [Your Name], Folsom Lake College</em>
+            <em>Built by [Arsani Rizk], Folsom Lake College</em>
             </div>
             """,
             unsafe_allow_html=True,

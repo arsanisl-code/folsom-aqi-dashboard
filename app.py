@@ -535,7 +535,6 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
         xaxis=dict(
             tickformat="%b %-d\n%-I%p",
             tickcolor="#374151",
-            gridcolor="#1f2937",
             showgrid=True,
             zeroline=False,
             tickfont=dict(size=9, color="#6b7280"),

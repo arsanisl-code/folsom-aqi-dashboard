@@ -1,9 +1,7 @@
 """
 app.py — Folsom AQI Monitor · FLC Los Rios STEM Fair 2026
-Live AQI forecast dashboard backed by FastAPI + LightGBM on DigitalOcean.
+Live AQI forecast dashboard backed by FastAPI + LightGBM.
 
-Run locally:  streamlit run app.py
-Deploy:       Push to GitHub → Streamlit Community Cloud
 """
 
 import os

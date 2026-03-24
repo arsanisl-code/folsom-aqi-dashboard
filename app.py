@@ -17,7 +17,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ── Page config — MUST be the very first Streamlit call ───────────────────────
+# ── Page config — Must be the very first Streamlit call ───────────────────────
 st.set_page_config(
     page_title="Folsom AQI Monitor — FLC Los Rios STEM Fair 2026",
     page_icon="🌬️",

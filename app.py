@@ -17,7 +17,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ── Page config — Must be the very first Streamlit call ───────────────────────
+# ── Page config — MUST be the very first Streamlit call ───────────────────────
 st.set_page_config(
     page_title="Folsom AQI Monitor — FLC Los Rios STEM Fair 2026",
     page_icon="🌬️",
@@ -191,7 +191,16 @@ def _call_gemini(prompt: str, api_key: str) -> str:
         return "The AI took too long to respond. Please try again."
     except Exception as exc:
         print(f"[ai] Gemini call failed: {exc}", file=sys.stderr)
-        return "Something went wrong with the AI response. Please try again."
+        
+        # Try to extract the exact Google error message if it exists
+        error_details = str(exc)
+        if hasattr(exc, "response") and exc.response is not None:
+            try:
+                error_details = exc.response.json().get("error", {}).get("message", exc.response.text)
+            except:
+                error_details = exc.response.text
+                
+        return f"Something went wrong with the AI response: {error_details}"
 
 
 def ask_ai(question: str, data: dict) -> str:
@@ -517,7 +526,10 @@ def load_forecast(api_url: str) -> dict | None:
     Never raises — all exceptions caught and logged to stderr.
     """
     try:
-        resp = requests.get(f"{api_url}/forecast", timeout=8)
+        # Render free tier goes to sleep after 15m of inactivity.
+        # A cold start + loading 12 models takes ~20-40 seconds. We use a 60s timeout here
+        # so Streamlit shows a spinner instead of instantly crashing. 
+        resp = requests.get(f"{api_url}/forecast", timeout=60)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:

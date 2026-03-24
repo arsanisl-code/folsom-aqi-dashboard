@@ -1,7 +1,9 @@
 """
 app.py — Folsom AQI Monitor · FLC Los Rios STEM Fair 2026
-Live AQI forecast dashboard backed by FastAPI + LightGBM.
+Live AQI forecast dashboard backed by FastAPI + LightGBM on Render.
 
+Run locally:  streamlit run app.py
+Deploy:       Push to GitHub → Streamlit Community Cloud
 """
 
 import os
@@ -25,7 +27,8 @@ st.set_page_config(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_URL = os.getenv("API_URL", st.secrets.get("API_URL", "http://localhost:8000")
+                    if hasattr(st, "secrets") else "http://localhost:8000")
 TZ      = ZoneInfo("America/Los_Angeles")
 
 COLORS = {
@@ -76,6 +79,127 @@ HORIZON_LABELS = {
     "24h": "24 HOUR FORECAST",
     "48h": "48 HOUR FORECAST",
 }
+
+# ── Gemini AI config ──────────────────────────────────────────────────────────
+
+_GEMINI_SYSTEM = """\
+You are an AI assistant embedded in the Folsom AQI Forecast dashboard — a \
+machine learning project built by a freshman computer engineering student at \
+Folsom Lake College (MESA Program Scholar, Phi Theta Kappa) for the 2026 \
+Los Rios STEM Fair.
+
+You have knowledge in three areas:
+
+1. CURRENT FORECAST DATA — provided in each request.
+
+2. MODEL ARCHITECTURE — The system uses LightGBM ensemble models with four \
+forecast horizons (6h, 12h, 24h, 48h). Features include AQI lags, PM2.5 \
+lags, boundary layer height, wind speed, aerosol optical depth (satellite \
+smoke detection), wildfire proxy features (Hot-Dry-Windy Index, Vapor \
+Pressure Deficit, antecedent precipitation deficit), pressure front \
+differencing, and cyclical time encodings. Models use Huber loss for \
+robustness to wildfire smoke spikes. Quantile models (1st and 99th \
+percentile) provide confidence intervals. Training data spans 2022–present \
+from Open-Meteo and AirNow sensor networks. Walk-forward validation over the \
+last 30 days generates honest accuracy estimates.
+
+3. AQI HEALTH GUIDANCE (US EPA scale):
+   Good (0–50): Safe for everyone.
+   Moderate (51–100): Unusually sensitive people may be affected.
+   Unhealthy for Sensitive Groups (101–150): Children, elderly, asthma/heart \
+patients should limit prolonged outdoor exertion.
+   Unhealthy (151–200): Everyone should reduce heavy outdoor exertion.
+   Very Unhealthy (201–300): Everyone should avoid prolonged outdoor exertion.
+   Hazardous (301–500): Avoid all outdoor exertion. Stay indoors.
+
+Keep answers concise, accurate, and friendly. If a question is completely \
+unrelated to air quality, environmental science, or this project, politely \
+redirect in one sentence.\
+"""
+
+_GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent"
+)
+
+
+def _get_gemini_key() -> str:
+    """Retrieve GEMINI_API_KEY from Streamlit secrets or env."""
+    try:
+        key = st.secrets.get("GEMINI_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("GEMINI_API_KEY", "")
+
+
+def _build_context(data: dict) -> str:
+    """Turn the /forecast JSON into a compact context string for the AI."""
+    current   = data.get("current", {})
+    forecasts = data.get("forecasts", {})
+    location  = data.get("location", {})
+    gen_at    = data.get("generated_at", "unknown")
+    freshness = data.get("data_freshness_minutes", "unknown")
+
+    lines = [
+        f"Location       : {location.get('name', 'Folsom, CA')}",
+        f"Data generated : {gen_at}  (sensor age: {freshness} min)",
+        "",
+        "CURRENT CONDITIONS",
+        f"  AQI            : {current.get('aqi')}",
+        f"  Category       : {current.get('category')}",
+        f"  Primary poll.  : {current.get('primary_pollutant', 'PM2.5')}",
+        f"  Source         : {current.get('source')}",
+        "",
+        "FORECASTS",
+    ]
+    for key, fc in sorted(forecasts.items()):
+        lines.append(
+            f"  {key:>3}  AQI {fc.get('aqi'):>3}  "
+            f"[{fc.get('ci_lo'):>3}–{fc.get('ci_hi'):>3}]  "
+            f"{fc.get('category')}"
+        )
+    return "\n".join(lines)
+
+
+def _call_gemini(prompt: str, api_key: str) -> str:
+    """
+    Call Gemini 2.0 Flash REST API directly (no SDK needed).
+    Returns the text response or an error string.
+    """
+    if not api_key:
+        return (
+            "⚠️ GEMINI_API_KEY is not set. "
+            "Add it to your Streamlit secrets to enable AI responses."
+        )
+    payload = {
+        "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 400},
+    }
+    try:
+        resp = requests.post(
+            f"{_GEMINI_ENDPOINT}?key={api_key}",
+            json=payload,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except requests.exceptions.Timeout:
+        return "The AI took too long to respond. Please try again."
+    except Exception as exc:
+        print(f"[ai] Gemini call failed: {exc}", file=sys.stderr)
+        return "Something went wrong with the AI response. Please try again."
+
+
+def ask_ai(question: str, data: dict) -> str:
+    """Single-turn AI answer grounded in the current forecast data."""
+    api_key = _get_gemini_key()
+    context = _build_context(data)
+    prompt  = f"Current forecast data:\n{context}\n\nUser question: {question.strip()}"
+    return _call_gemini(prompt, api_key)
 
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
@@ -169,7 +293,7 @@ def inject_css():
     .advisory-banner {
         border-radius: 12px;
         padding: 0.9rem 1.25rem;
-        margin-bottom: 1rem;
+        margin-bottom: 0.75rem;
         display: flex;
         align-items: center;
         gap: 0.75rem;
@@ -180,6 +304,84 @@ def inject_css():
         height: 10px;
         border-radius: 50%;
         flex-shrink: 0;
+    }
+
+    /* ── AI Summary card ── */
+    .ai-summary-card {
+        background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
+        border: 1px solid #1e3a5f;
+        border-radius: 14px;
+        padding: 1.1rem 1.4rem;
+        margin-bottom: 1rem;
+        position: relative;
+        overflow: hidden;
+    }
+    .ai-summary-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6);
+        opacity: 0.6;
+    }
+    .ai-summary-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #3b82f6;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    .ai-summary-text {
+        font-size: 13.5px;
+        line-height: 1.7;
+        color: #d1d5db;
+    }
+
+    /* ── Chat section ── */
+    .chat-section-header {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #4b5563;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .chat-q {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px 12px 4px 12px;
+        padding: 0.75rem 1rem;
+        font-size: 13px;
+        color: #e2e8f0;
+        margin-bottom: 0.5rem;
+        max-width: 85%;
+        margin-left: auto;
+    }
+    .chat-a {
+        background: #0f172a;
+        border: 1px solid #1e3a5f;
+        border-radius: 4px 12px 12px 12px;
+        padding: 0.75rem 1rem;
+        font-size: 13px;
+        color: #d1d5db;
+        line-height: 1.65;
+        margin-bottom: 1rem;
+        max-width: 90%;
+    }
+    .chat-a-label {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #3b82f6;
+        margin-bottom: 0.35rem;
     }
 
     /* ── Header ── */
@@ -240,6 +442,21 @@ def inject_css():
         font-weight: 500 !important;
     }
 
+    /* ── Streamlit chat input overrides ── */
+    [data-testid="stChatInput"] > div {
+        background: #111827 !important;
+        border: 1px solid #1f2937 !important;
+        border-radius: 12px !important;
+    }
+    [data-testid="stChatInput"] textarea {
+        color: #f9fafb !important;
+        font-family: 'Space Grotesk', sans-serif !important;
+        font-size: 13px !important;
+    }
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: #4b5563 !important;
+    }
+
     /* ── Footer ── */
     .page-footer {
         text-align: center;
@@ -284,6 +501,7 @@ def inject_css():
     @media (max-width: 480px) {
         .block-container { padding: 0.75rem !important; }
         .aqi-card { padding: 1rem; }
+        .chat-q, .chat-a { max-width: 100%; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -310,7 +528,6 @@ def load_forecast(api_url: str) -> dict | None:
 def fetch_with_retry(api_url: str, max_attempts: int = 3) -> dict | None:
     """Retry load_forecast up to max_attempts times with 10s delays."""
     for attempt in range(max_attempts):
-        # Clear cache on retry so we actually re-fetch
         if attempt > 0:
             load_forecast.clear()
             time.sleep(10)
@@ -350,13 +567,12 @@ def format_valid_at(ts_str: str) -> str:
     try:
         ts  = datetime.fromisoformat(ts_str).astimezone(TZ)
         now = datetime.now(tz=TZ)
-        tz_name = "PDT" if ts.dst() else "PST"
         if ts.date() == now.date():
-            return ts.strftime(f"%-I:%M %p today")
+            return ts.strftime("%-I:%M %p today")
         elif (ts.date() - now.date()).days == 1:
-            return ts.strftime(f"%-I:%M %p tomorrow")
+            return ts.strftime("%-I:%M %p tomorrow")
         else:
-            return ts.strftime(f"%-I:%M %p %b %-d")
+            return ts.strftime("%-I:%M %p %b %-d")
     except Exception:
         return ts_str
 
@@ -401,11 +617,12 @@ def make_gauge_figure(aqi_value: float, category: str, color: str) -> go.Figure:
         },
         gauge={
             "axis": {
-                "range":    [0, 500],
-                "tickvals": [0, 50, 100, 150, 200, 300, 500],
-                "ticktext": ["0", "50", "100", "150", "200", "300", "500"],
+                "range":     [0, 500],
+                "tickvals":  [0, 50, 100, 150, 200, 300, 500],
+                "ticktext":  ["0", "50", "100", "150", "200", "300", "500"],
                 "tickcolor": "#374151",
-                "tickfont": {"size": 10, "color": "#6b7280"},
+                "tickfont":  {"size": 10, "color": "#6b7280"},
+                "gridcolor": "#1f2937",
             },
             "bar": {
                 "color":     color,
@@ -447,7 +664,6 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
     color      = get_aqi_color(category)
     color_band = get_aqi_rgba(category, 0.12)
 
-    # Parse entries — only those with at least one non-null value
     times, actuals, forecasts, ci_lo, ci_hi = [], [], [], [], []
     for h in history_72h:
         ts = h.get("timestamp")
@@ -467,7 +683,6 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
 
     fig = go.Figure()
 
-    # AQI category band backgrounds
     for lo, hi_b, rgba in [
         (0,   50,  "rgba(0,228,0,0.06)"),
         (50,  100, "rgba(255,255,0,0.06)"),
@@ -478,9 +693,7 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
             fig.add_hrect(y0=lo, y1=min(hi_b, y_max),
                           fillcolor=rgba, line_width=0, layer="below")
 
-    # CI band
     if has_forecasts and any(v is not None for v in ci_hi):
-        # Build clean parallel arrays with None gaps
         fig.add_trace(go.Scatter(
             x=times + times[::-1],
             y=ci_hi + ci_lo[::-1],
@@ -492,7 +705,6 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
             name="90% CI",
         ))
 
-    # Forecast line
     if has_forecasts:
         fig.add_trace(go.Scatter(
             x=times, y=forecasts,
@@ -503,7 +715,6 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
             hovertemplate="%{x|%b %-d %-I %p}<br>Forecast: %{y:.0f} AQI<extra></extra>",
         ))
 
-    # Actual line
     if has_actuals:
         fig.add_trace(go.Scatter(
             x=times, y=actuals,
@@ -581,19 +792,16 @@ def render_header(generated_at: str):
 
 def render_gauge(current_aqi: int, category: str, color: str):
     """Render the AQI gauge with smooth animation on value change."""
-    # Session state for needle animation
     if "prev_aqi" not in st.session_state:
         st.session_state.prev_aqi = current_aqi
 
     gauge_placeholder = st.empty()
 
     if abs(current_aqi - st.session_state.prev_aqi) > 2:
-        # Animate from previous to current value over 12 frames
         start  = float(st.session_state.prev_aqi)
         end    = float(current_aqi)
         frames = 12
         for i in range(frames + 1):
-            # Ease-in-out cubic interpolation
             t     = i / frames
             ease  = t * t * (3 - 2 * t)
             val   = start + (end - start) * ease
@@ -626,6 +834,27 @@ def render_advisory(category: str, color: str):
                 <span style="font-weight:600;color:{color};font-size:13px;">{category}</span>
                 <span style="color:#9ca3af;font-size:13px;"> — {advisory}</span>
             </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_ai_summary(data: dict):
+    """
+    Render the AI-generated plain-English summary card.
+    Reads from data['ai_summary'] — generated hourly by inference.py.
+    If the field is empty (key missing or blank), the card is hidden entirely.
+    """
+    summary = data.get("ai_summary", "").strip()
+    if not summary:
+        return   # Backend hasn't generated it yet (no GEMINI_API_KEY set on server)
+
+    st.markdown(
+        f"""
+        <div class="ai-summary-card">
+            <div class="ai-summary-label">✦ AI Summary</div>
+            <div class="ai-summary-text">{summary}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -673,12 +902,11 @@ def render_forecast_cards(forecasts: dict):
 
 def render_info_chips(current: dict, generated_at: str):
     """Row of 4 metadata info chips below the forecast cards."""
-    ts_str   = current.get("timestamp", generated_at)
+    ts_str    = current.get("timestamp", generated_at)
     pollutant = current.get("primary_pollutant", "—")
     source    = current.get("source", "—")
     src_label = "AirNow Sensor" if source == "AirNow" else "Open-Meteo Model"
 
-    # Compute next refresh countdown
     try:
         gen_ts  = datetime.fromisoformat(generated_at)
         now     = datetime.now(tz=gen_ts.tzinfo or TZ)
@@ -721,7 +949,7 @@ def render_history_chart(history_72h: list, category: str):
                 """
                 <div style="color:#6b7280;font-size:13px;padding:1rem 0;text-align:center;">
                     Forecast history is building up — check back in a few hours.<br>
-                    <span style="font-size:11px;">The system logs predictions as it runs; 
+                    <span style="font-size:11px;">The system logs predictions as it runs;
                     the chart fills in over the first 72 hours of operation.</span>
                 </div>
                 """,
@@ -735,6 +963,59 @@ def render_history_chart(history_72h: list, category: str):
             )
 
 
+def render_ai_chat(data: dict):
+    """
+    Single-turn AI chatbox grounded in the current forecast data.
+    Users type a question, press Enter, and see the AI's answer.
+    The last Q&A pair is stored in session state so it survives reruns.
+    """
+    st.markdown(
+        '<div class="chat-section-header">🤖 &nbsp; Ask the AI about air quality</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Show last Q&A pair if it exists
+    last_q = st.session_state.get("chat_last_q", "")
+    last_a = st.session_state.get("chat_last_a", "")
+
+    if last_q and last_a:
+        st.markdown(
+            f'<div class="chat-q">{last_q}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="chat-a">'
+            f'<div class="chat-a-label">✦ AI</div>'
+            f'{last_a}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Chat input — Streamlit re-runs app on submit
+    question = st.chat_input(
+        "Ask anything — e.g. 'Is it safe to run outside today?' or 'How does the model work?'",
+        key="ai_chat_input",
+    )
+
+    if question:
+        # Check key availability first
+        api_key = _get_gemini_key()
+        if not api_key:
+            st.session_state["chat_last_q"] = question
+            st.session_state["chat_last_a"] = (
+                "⚠️ The AI assistant isn't configured yet. "
+                "Add GEMINI_API_KEY to your Streamlit secrets to enable this feature."
+            )
+            st.rerun()
+
+        with st.spinner("Thinking..."):
+            answer = ask_ai(question, data)
+
+        st.session_state["chat_last_q"] = question
+        st.session_state["chat_last_a"] = answer
+        st.rerun()
+
+
 def render_about():
     """About / methodology expander."""
     with st.expander("ℹ️  About This Forecast", expanded=False):
@@ -745,14 +1026,15 @@ def render_about():
             air quality and meteorological data for Folsom, CA.<br><br>
             The model (<strong style="color:#f9fafb;">LightGBM</strong>) produces separate
             forecasts for <strong style="color:#f9fafb;">6, 12, 24, and 48-hour horizons</strong>.
-            Confidence intervals represent the 5th–95th percentile range of expected outcomes
+            Confidence intervals represent the 1st–99th percentile range of expected outcomes
             based on quantile regression.<br><br>
             <strong style="color:#f9fafb;">Data sources:</strong><br>
             &bull; Current readings: AirNow (U.S. EPA sensor network)<br>
             &bull; Weather inputs: Open-Meteo historical and forecast API<br>
             &bull; Training data: 2022–present, Folsom monitoring station<br><br>
-            <em>Presented at FLC Los Rios STEM Fair 2026</em><br>
-            <em>Built by [Arsani Rizk], Folsom Lake College</em>
+            <strong style="color:#f9fafb;">AI layer:</strong> Plain-English summaries and
+            the Q&amp;A chatbox are powered by Google Gemini 2.0 Flash.<br><br>
+            <em>Presented at FLC Los Rios STEM Fair 2026</em>
             </div>
             """,
             unsafe_allow_html=True,
@@ -811,20 +1093,18 @@ def main():
 
     # ── Extract fields ─────────────────────────────────────────────────────
     try:
-        generated_at  = data.get("generated_at", "")
-        current       = data.get("current", {})
-        forecasts     = data.get("forecasts", {})
-        history_72h   = data.get("history_72h", [])
+        generated_at = data.get("generated_at", "")
+        current      = data.get("current", {})
+        forecasts    = data.get("forecasts", {})
+        history_72h  = data.get("history_72h", [])
 
         raw_aqi  = current.get("aqi", 1)
         aqi      = max(1, int(raw_aqi)) if raw_aqi else 1
         category = current.get("category", "Good")
         color    = get_aqi_color(category)
 
-        # Sensor unavailable guard
         sensor_missing = (raw_aqi == 0 or raw_aqi is None)
 
-        # Stale data warning (> 120 minutes)
         age = data_age_minutes(generated_at)
         if age > 120:
             render_error(
@@ -855,6 +1135,9 @@ def main():
         render_gauge(aqi, category, color)
         render_advisory(category, color)
 
+        # ── AI Summary (shown if backend has GEMINI_API_KEY set) ──────────
+        render_ai_summary(data)
+
         st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
         render_forecast_cards(forecasts)
         render_info_chips(current, generated_at)
@@ -862,6 +1145,12 @@ def main():
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
 
         render_history_chart(history_72h, category)
+
+        # ── AI Chatbox ────────────────────────────────────────────────────
+        render_ai_chat(data)
+
+        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+
         render_about()
         render_footer()
 

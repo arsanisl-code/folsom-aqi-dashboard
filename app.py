@@ -6,6 +6,7 @@ Run locally:  streamlit run app.py
 Deploy:       Push to GitHub → Streamlit Community Cloud
 """
 
+import html
 import os
 import sys
 import time
@@ -27,8 +28,17 @@ st.set_page_config(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-API_URL = os.getenv("API_URL", st.secrets.get("API_URL", "http://localhost:8000")
-                    if hasattr(st, "secrets") else "http://localhost:8000")
+def _get_api_url() -> str:
+    # Safely load the secrets inside a function to avoid crashing cold-starts
+    url = os.getenv("API_URL", "")
+    if not url:
+        try:
+            url = st.secrets.get("API_URL", "")
+        except Exception:
+            pass
+    return url or "http://localhost:8000"
+
+API_URL = _get_api_url()
 TZ      = ZoneInfo("America/Los_Angeles")
 
 COLORS = {
@@ -82,49 +92,10 @@ HORIZON_LABELS = {
 
 # ── Gemini AI config ──────────────────────────────────────────────────────────
 
-_GEMINI_SYSTEM = """\
-You are an AI assistant embedded in the Folsom AQI Forecast dashboard — a \
-machine learning project built by a freshman computer engineering student at \
-Folsom Lake College (MESA Program Scholar, Phi Theta Kappa) for the 2026 \
-Los Rios STEM Fair.
-
-You have knowledge in three areas:
-
-1. CURRENT FORECAST DATA — provided in each request.
-
-2. MODEL ARCHITECTURE — The system uses LightGBM ensemble models with four \
-forecast horizons (6h, 12h, 24h, 48h). Features include AQI lags, PM2.5 \
-lags, boundary layer height, wind speed, aerosol optical depth (satellite \
-smoke detection), wildfire proxy features (Hot-Dry-Windy Index, Vapor \
-Pressure Deficit, antecedent precipitation deficit), pressure front \
-differencing, and cyclical time encodings. Models use Huber loss for \
-robustness to wildfire smoke spikes. Quantile models (1st and 99th \
-percentile) provide confidence intervals. Training data spans 2022–present \
-from Open-Meteo and AirNow sensor networks. Walk-forward validation over the \
-last 30 days generates honest accuracy estimates.
-
-3. AQI HEALTH GUIDANCE (US EPA scale):
-   Good (0–50): Safe for everyone.
-   Moderate (51–100): Unusually sensitive people may be affected.
-   Unhealthy for Sensitive Groups (101–150): Children, elderly, asthma/heart \
-patients should limit prolonged outdoor exertion.
-   Unhealthy (151–200): Everyone should reduce heavy outdoor exertion.
-   Very Unhealthy (201–300): Everyone should avoid prolonged outdoor exertion.
-   Hazardous (301–500): Avoid all outdoor exertion. Stay indoors.
-
-Keep answers concise, accurate, and friendly. If a question is completely \
-unrelated to air quality, environmental science, or this project, politely \
-redirect in one sentence.\
-"""
-
-_GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent"
-)
-
+from ai_layer import answer_question
 
 def _get_gemini_key() -> str:
-    """Retrieve GEMINI_API_KEY from Streamlit secrets or env."""
+    """Retrieve GEMINI_API_KEY from Streamlit secrets or env to validate UI chatbox availability."""
     try:
         key = st.secrets.get("GEMINI_API_KEY", "")
         if key:
@@ -134,389 +105,169 @@ def _get_gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "")
 
 
-def _build_context(data: dict) -> str:
-    """Turn the /forecast JSON into a compact context string for the AI."""
-    current   = data.get("current", {})
-    forecasts = data.get("forecasts", {})
-    location  = data.get("location", {})
-    gen_at    = data.get("generated_at", "unknown")
-    freshness = data.get("data_freshness_minutes", "unknown")
-
-    lines = [
-        f"Location       : {location.get('name', 'Folsom, CA')}",
-        f"Data generated : {gen_at}  (sensor age: {freshness} min)",
-        "",
-        "CURRENT CONDITIONS",
-        f"  AQI            : {current.get('aqi')}",
-        f"  Category       : {current.get('category')}",
-        f"  Primary poll.  : {current.get('primary_pollutant', 'PM2.5')}",
-        f"  Source         : {current.get('source')}",
-        "",
-        "FORECASTS",
-    ]
-    for key, fc in sorted(forecasts.items()):
-        lines.append(
-            f"  {key:>3}  AQI {fc.get('aqi'):>3}  "
-            f"[{fc.get('ci_lo'):>3}–{fc.get('ci_hi'):>3}]  "
-            f"{fc.get('category')}"
-        )
-    return "\n".join(lines)
-
-
-def _call_gemini(prompt: str, api_key: str) -> str:
-    """
-    Call Gemini 2.0 Flash REST API directly (no SDK needed).
-    Returns the text response or an error string.
-    """
-    if not api_key:
-        return (
-            "⚠️ GEMINI_API_KEY is not set. "
-            "Add it to your Streamlit secrets to enable AI responses."
-        )
-    payload = {
-        "systemInstruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1000},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-    }
-    try:
-        resp = requests.post(
-            f"{_GEMINI_ENDPOINT}?key={api_key}",
-            json=payload,
-            timeout=20,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except requests.exceptions.Timeout:
-        return "The AI took too long to respond. Please try again."
-    except Exception as exc:
-        print(f"[ai] Gemini call failed: {exc}", file=sys.stderr)
-        
-        # Try to extract the exact Google error message if it exists
-        error_details = str(exc)
-        if hasattr(exc, "response") and exc.response is not None:
-            try:
-                error_details = exc.response.json().get("error", {}).get("message", exc.response.text)
-            except:
-                error_details = exc.response.text
-                
-        return f"Something went wrong with the AI response: {error_details}"
-
-
-def ask_ai(question: str, data: dict) -> str:
-    """Single-turn AI answer grounded in the current forecast data."""
-    api_key = _get_gemini_key()
-    context = _build_context(data)
-    prompt  = f"Current forecast data:\n{context}\n\nUser question: {question.strip()}"
-    return _call_gemini(prompt, api_key)
-
-
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
 def inject_css():
     st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 
-    /* ── Reset & base ── */
+    /* ── RESET: Strict Instrumentation Profile ── */
     html, body, [class*="css"] {
-        font-family: 'Space Grotesk', sans-serif !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        letter-spacing: -0.01em !important;
     }
     .stApp {
-        background-color: #0a0f1e;
-        background-image:
-            radial-gradient(ellipse at 20% 0%, rgba(56,189,248,0.06) 0%, transparent 60%),
-            radial-gradient(ellipse at 80% 100%, rgba(129,140,248,0.05) 0%, transparent 60%);
+        background-color: #000000;
+        background-image: none !important;
     }
     .block-container {
-        padding: 1.25rem 1.25rem 3rem 1.25rem !important;
-        max-width: 960px !important;
+        padding: 0.5rem 1rem 1rem 1rem !important;
+        max-width: 1100px !important;
         margin: 0 auto !important;
     }
 
-    /* ── Hide Streamlit chrome ── */
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
-    header { visibility: hidden; }
-    .stDeployButton { display: none; }
-    [data-testid="stToolbar"] { display: none; }
+    /* ── HIDE CHROME ── */
+    #MainMenu, footer, header, .stDeployButton, [data-testid="stToolbar"] { visibility: hidden; display: none; }
 
-    /* ── Cards ── */
+    /* ── CARDS: Flat Matte Utility ── */
     .aqi-card {
-        background: #111827;
-        border: 1px solid #1f2937;
-        border-radius: 16px;
-        padding: 1.25rem 1.5rem;
-        margin-bottom: 1rem;
-        position: relative;
-        overflow: hidden;
-    }
-    .aqi-card::before {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+        background: #000000;
+        border: 1px solid #333333;
+        border-radius: 2px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
     }
 
-    /* ── Horizon forecast cards ── */
     .horizon-card {
-        background: #111827;
-        border-radius: 14px;
-        padding: 1.1rem 0.75rem 1rem;
-        text-align: center;
-        border: 1px solid #1f2937;
-        transition: transform 0.15s ease, border-color 0.15s ease;
-        position: relative;
-        overflow: hidden;
+        background: #000000;
+        border-radius: 2px;
+        padding: 0.5rem;
+        text-align: left;
+        border: 1px solid #222222;
+        transition: border-color 0.1s ease;
     }
     .horizon-card:hover {
-        transform: translateY(-2px);
-        border-color: #374151;
+        border-color: #444444;
     }
 
-    /* ── Info chips ── */
-    .info-card {
-        background: #111827;
-        border: 1px solid #1f2937;
-        border-radius: 12px;
-        padding: 0.9rem 1rem;
-        text-align: center;
-    }
-    .info-label {
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #6b7280;
-        margin-bottom: 0.3rem;
-    }
-    .info-value {
-        font-size: 13px;
-        font-weight: 600;
-        color: #f9fafb;
+    /* ── TELEMETRY BAR (Replaces Info Chips) ── */
+    .telemetry-row {
+        display: flex;
+        gap: 1.5rem;
+        padding: 0.4rem 0.75rem;
+        background: #111111;
+        border: 1px solid #222222;
+        border-radius: 2px;
+        margin-bottom: 0.75rem;
+        font-size: 11px;
+        color: #888888;
         font-family: 'JetBrains Mono', monospace;
     }
+    .tel-item { display: flex; gap: 0.5rem; }
+    .tel-label { color: #555555; font-weight: 700; }
+    .tel-value { color: #aaaaaa; }
 
-    /* ── Advisory banner ── */
+    /* ── UNCERTAINTY VISUALIZATION (Bullet Graph) ── */
+    .uncertainty-box {
+        height: 6px;
+        background: #1a1a1a;
+        width: 100%;
+        margin-top: 0.5rem;
+        position: relative;
+        border-radius: 1px;
+    }
+    .ci-range {
+        position: absolute;
+        height: 100%;
+        background: #333333;
+        border-radius: 1px;
+    }
+    .point-prediction {
+        position: absolute;
+        top: -3px;
+        height: 12px;
+        width: 2px;
+        background: #ffffff;
+        z-index: 10;
+    }
+
+    /* ── ADVISORY ── */
     .advisory-banner {
-        border-radius: 12px;
-        padding: 0.9rem 1.25rem;
-        margin-bottom: 0.75rem;
+        border-radius: 2px;
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 0.5rem;
         display: flex;
         align-items: center;
-        gap: 0.75rem;
-        border: 1px solid rgba(255,255,255,0.06);
-    }
-    .advisory-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
+        gap: 0.6rem;
+        border: 1px solid rgba(255,255,255,0.1);
+        font-size: 12px;
     }
 
-    /* ── AI Summary card ── */
+    /* ── AI SUMMARY ── */
     .ai-summary-card {
-        background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
-        border: 1px solid #1e3a5f;
-        border-radius: 14px;
-        padding: 1.1rem 1.4rem;
-        margin-bottom: 1rem;
-        position: relative;
-        overflow: hidden;
-    }
-    .ai-summary-card::before {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 2px;
-        background: linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6);
-        opacity: 0.6;
+        background: #050505;
+        border: 1px solid #1a2a3a;
+        border-radius: 2px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.75rem;
     }
     .ai-summary-label {
         font-size: 10px;
         font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
         color: #3b82f6;
-        margin-bottom: 0.5rem;
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
+        margin-bottom: 0.3rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
     .ai-summary-text {
-        font-size: 13.5px;
-        line-height: 1.7;
-        color: #d1d5db;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #aaaaaa;
     }
 
-    /* ── Chat section ── */
-    .chat-section-header {
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: #4b5563;
-        margin-bottom: 0.75rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    .chat-q {
-        background: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 12px 12px 4px 12px;
-        padding: 0.75rem 1rem;
-        font-size: 13px;
-        color: #e2e8f0;
-        margin-bottom: 0.5rem;
-        max-width: 85%;
-        margin-left: auto;
-    }
-    .chat-a {
-        background: #0f172a;
-        border: 1px solid #1e3a5f;
-        border-radius: 4px 12px 12px 12px;
-        padding: 0.75rem 1rem;
-        font-size: 13px;
-        color: #d1d5db;
-        line-height: 1.65;
-        margin-bottom: 1rem;
-        max-width: 90%;
-    }
-    .chat-a-label {
-        font-size: 9px;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: #3b82f6;
-        margin-bottom: 0.35rem;
-    }
-
-    /* ── Header ── */
+    /* ── HEADER ── */
     .header-title {
-        font-size: clamp(20px, 5vw, 28px);
+        font-size: 20px;
         font-weight: 700;
-        color: #f9fafb;
-        letter-spacing: -0.03em;
+        color: #ffffff;
+        letter-spacing: -0.02em;
         margin: 0;
-        line-height: 1.2;
     }
     .header-sub {
+        font-size: 11px;
+        color: #555555;
+        margin-top: 0.1rem;
+    }
+
+    /* ── BANNER / STATUS ── */
+    .banner-warn, .banner-error, .banner-stale {
+        border-radius: 2px;
+        padding: 0.5rem 1rem;
         font-size: 12px;
-        color: #6b7280;
-        margin-top: 0.25rem;
-        font-family: 'JetBrains Mono', monospace;
-        letter-spacing: 0.02em;
+        margin-bottom: 0.75rem;
+        border: 1px solid transparent;
     }
+    .banner-stale { background: #1a0f00; border-color: #552200; color: #ff8800; }
 
-    /* ── Status banners ── */
-    .banner-warn {
-        background: rgba(251,191,36,0.08);
-        border: 1px solid rgba(251,191,36,0.25);
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        color: #fbbf24;
-        font-size: 13px;
-        margin-bottom: 1rem;
-    }
-    .banner-error {
-        background: rgba(239,68,68,0.08);
-        border: 1px solid rgba(239,68,68,0.25);
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        color: #ef4444;
-        font-size: 13px;
-        margin-bottom: 1rem;
-    }
-    .banner-stale {
-        background: rgba(251,146,60,0.08);
-        border: 1px solid rgba(251,146,60,0.25);
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        color: #fb923c;
-        font-size: 13px;
-        margin-bottom: 1rem;
-    }
+    /* ── PLOTLY OVERRIDES ── */
+    .js-plotly-plot .plotly { border-radius: 2px; border: 1px solid #222222; }
 
-    /* ── Expander styling ── */
-    [data-testid="stExpander"] {
-        background: #111827 !important;
-        border: 1px solid #1f2937 !important;
-        border-radius: 12px !important;
+    /* ── STEM Fair Optimized Mobile ── */
+    .forecast-grid {
+        display: grid;
+        grid-template_columns: repeat(4, 1fr);
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
     }
-    [data-testid="stExpander"] summary {
-        color: #9ca3af !important;
-        font-size: 13px !important;
-        font-weight: 500 !important;
+    @media (max-width: 640px) {
+        .block-container { padding: 0.5rem !important; }
+        .aqi-number { font-size: 28px !important; }
+        .forecast-grid { grid-template-columns: repeat(2, 1fr); }
+        .telemetry-row { flex-wrap: wrap; gap: 0.5rem 1rem; }
     }
-
-    /* ── Streamlit chat input overrides ── */
-    [data-testid="stChatInput"] > div {
-        background: #111827 !important;
-        border: 1px solid #1f2937 !important;
-        border-radius: 12px !important;
-    }
-    [data-testid="stChatInput"] textarea {
-        color: #f9fafb !important;
-        font-family: 'Space Grotesk', sans-serif !important;
-        font-size: 13px !important;
-    }
-    [data-testid="stChatInput"] textarea::placeholder {
-        color: #4b5563 !important;
-    }
-
-    /* ── Footer ── */
-    .page-footer {
-        text-align: center;
-        color: #374151;
-        font-size: 11px;
-        padding: 2rem 0 0.5rem;
-        letter-spacing: 0.03em;
-    }
-
-    /* ── AQI big number ── */
-    .aqi-number {
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: clamp(32px, 8vw, 48px);
-        font-weight: 700;
-        letter-spacing: -0.04em;
-        line-height: 1;
-    }
-
-    /* ── Countdown chip ── */
-    .refresh-chip {
-        display: inline-block;
-        background: rgba(55,65,81,0.6);
-        border: 1px solid #374151;
-        border-radius: 20px;
-        padding: 0.2rem 0.65rem;
-        font-size: 11px;
-        color: #9ca3af;
-        font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* ── Divider ── */
-    .section-divider {
-        border: none;
-        border-top: 1px solid #1f2937;
-        margin: 1rem 0;
-    }
-
-    /* ── Plotly chart containers ── */
-    .js-plotly-plot .plotly { border-radius: 12px; }
-
-    /* ── Mobile tweaks ── */
-    @media (max-width: 480px) {
-        .block-container { padding: 0.75rem !important; }
-        .aqi-card { padding: 1rem; }
-        .chat-q, .chat-a { max-width: 100%; }
+    @media (max-width: 400px) {
+        .forecast-grid { grid-template-columns: 1fr; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -544,11 +295,13 @@ def load_forecast(api_url: str) -> dict | None:
 
 
 def fetch_with_retry(api_url: str, max_attempts: int = 3) -> dict | None:
-    """Retry load_forecast up to max_attempts times with 10s delays."""
+    """Retry load_forecast up to max_attempts times."""
     for attempt in range(max_attempts):
         if attempt > 0:
             load_forecast.clear()
-            time.sleep(10)
+            # Removed 10-second sleep which blocked the Streamlit UI thread
+            with st.spinner("Retrying connection to backend..."):
+                time.sleep(1.5)
         result = load_forecast(api_url)
         if result is not None:
             return result
@@ -575,7 +328,9 @@ def format_timestamp(ts_str: str) -> str:
         else:
             ts = ts.astimezone(TZ)
         tz_name = "PDT" if ts.dst() else "PST"
-        return ts.strftime(f"%-I:%M %p {tz_name} · %b %-d")
+        h = str(int(ts.strftime("%I")))
+        d = str(int(ts.strftime("%d")))
+        return ts.strftime(f"{h}:%M %p {tz_name} · %b {d}")
     except Exception:
         return ts_str
 
@@ -585,12 +340,14 @@ def format_valid_at(ts_str: str) -> str:
     try:
         ts  = datetime.fromisoformat(ts_str).astimezone(TZ)
         now = datetime.now(tz=TZ)
+        h = str(int(ts.strftime("%I")))
+        d = str(int(ts.strftime("%d")))
         if ts.date() == now.date():
-            return ts.strftime("%-I:%M %p today")
+            return ts.strftime(f"{h}:%M %p today")
         elif (ts.date() - now.date()).days == 1:
-            return ts.strftime("%-I:%M %p tomorrow")
+            return ts.strftime(f"{h}:%M %p tomorrow")
         else:
-            return ts.strftime("%-I:%M %p %b %-d")
+            return ts.strftime(f"{h}:%M %p %b {d}")
     except Exception:
         return ts_str
 
@@ -786,25 +543,38 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
 
 # ── UI components ─────────────────────────────────────────────────────────────
 
-def render_header(generated_at: str):
-    col_title, col_meta = st.columns([3, 1])
-    with col_title:
-        st.markdown(
-            '<p class="header-title">🌬️ Folsom Air Quality Monitor</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<p class="header-sub">'
-            f'Folsom, CA &nbsp;·&nbsp; 38.6780°N, 121.1761°W &nbsp;·&nbsp; '
-            f'Updated {format_timestamp(generated_at)} &nbsp;'
-            f'<span class="refresh-chip">⟳ {time_until_refresh()}</span>'
-            f'</p>',
-            unsafe_allow_html=True,
-        )
-    with col_meta:
-        if st.button("🔄 Refresh", key="manual_refresh", use_container_width=True):
-            load_forecast.clear()
-            st.rerun()
+def render_header(generated_at: str, current: dict):
+    """Minimal instrumentation header with telemetry integrated."""
+    source    = current.get("source", "—")
+    src_label = "AIRNOW" if source == "AirNow" else "OPNMETEO"
+    ts_str    = current.get("timestamp", generated_at)
+    
+    try:
+        gen_ts  = datetime.fromisoformat(generated_at)
+        now     = datetime.now(tz=gen_ts.tzinfo or TZ)
+        elapsed = max(0, int((now - gen_ts).total_seconds() / 60))
+        remain  = max(0, 60 - elapsed)
+        refr_ttl = f"{remain}m"
+    except Exception:
+        refr_ttl = "—"
+
+    st.markdown(
+        f"""
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1rem; border-bottom:1px solid #222; padding-bottom:0.5rem;">
+            <div>
+                <div class="header-title">FOLSOM_AQI_MONITOR</div>
+                <div class="header-sub">LAT: 38.6780°N | LON: 121.1761°W | ALT: 66M</div>
+            </div>
+            <div class="telemetry-row" style="margin-bottom:0; border:none; background:none; padding:0;">
+                <div class="tel-item"><span class="tel-label">SYS.VER:</span><span class="tel-value">v2.0</span></div>
+                <div class="tel-item"><span class="tel-label">DATA.SRC:</span><span class="tel-value">{src_label}</span></div>
+                <div class="tel-item"><span class="tel-label">FRESH:</span><span class="tel-value">{elapsed}m</span></div>
+                <div class="tel-item"><span class="tel-label">REFR.TTL:</span><span class="tel-value">{refr_ttl}</span></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_gauge(current_aqi: int, category: str, color: str):
@@ -817,7 +587,7 @@ def render_gauge(current_aqi: int, category: str, color: str):
     if abs(current_aqi - st.session_state.prev_aqi) > 2:
         start  = float(st.session_state.prev_aqi)
         end    = float(current_aqi)
-        frames = 12
+        frames = 6
         for i in range(frames + 1):
             t     = i / frames
             ease  = t * t * (3 - 2 * t)
@@ -827,7 +597,7 @@ def render_gauge(current_aqi: int, category: str, color: str):
                 use_container_width=True,
                 config={"displayModeBar": False},
             )
-            time.sleep(0.035)
+            time.sleep(0.01)
         st.session_state.prev_aqi = current_aqi
     else:
         gauge_placeholder.plotly_chart(
@@ -838,18 +608,14 @@ def render_gauge(current_aqi: int, category: str, color: str):
 
 
 def render_advisory(category: str, color: str):
-    """Render the health advisory banner below the gauge."""
+    """Strict linear advisory banner."""
     advisory = ADVISORIES.get(category, "No advisory available.")
-    bg_color = get_aqi_rgba(category, 0.08)
-    border   = get_aqi_rgba(category, 0.25)
-
     st.markdown(
         f"""
-        <div class="advisory-banner" style="background:{bg_color};border-color:{border};">
-            <div class="advisory-dot" style="background:{color};box-shadow:0 0 8px {color}55;"></div>
-            <div>
-                <span style="font-weight:600;color:{color};font-size:13px;">{category}</span>
-                <span style="color:#9ca3af;font-size:13px;"> — {advisory}</span>
+        <div class="advisory-banner" style="border-left:3px solid {color}; background:#080808;">
+            <div style="font-family:'JetBrains Mono', monospace; font-size:11px;">
+                <span style="color:{color}; font-weight:700;">[{category.upper()}]</span>
+                <span style="color:#888; margin-left:0.5rem;">{advisory}</span>
             </div>
         </div>
         """,
@@ -879,9 +645,14 @@ def render_ai_summary(data: dict):
 
 
 def render_forecast_cards(forecasts: dict):
-    """4 horizon cards in a responsive row."""
-    cols = st.columns(4, gap="small")
-    for col, h_key in zip(cols, ["6h", "12h", "24h", "48h"]):
+    """4 horizon cards with scientific bullet graphs for uncertainty (Fix #9)."""
+    grid_html = '<div class="forecast-grid">'
+    
+    # Standardize scale to 200 for the visual bars (or max of forecasts if higher)
+    all_vals = [f.get("ci_hi", 100) for f in forecasts.values()]
+    max_scale = max(200, max(all_vals) if all_vals else 200)
+
+    for h_key in ["6h", "12h", "24h", "48h"]:
         fc = forecasts.get(h_key, {})
         if not fc:
             continue
@@ -891,67 +662,57 @@ def render_forecast_cards(forecasts: dict):
         cat      = fc.get("category", "Good")
         valid_at = fc.get("valid_at", "")
         color    = get_aqi_color(cat)
-        ci_half  = round((ci_hi - ci_lo) / 2)
         label    = HORIZON_LABELS.get(h_key, h_key.upper())
         valid_str = format_valid_at(valid_at)
 
-        with col:
-            st.markdown(
-                f"""
-                <div class="horizon-card" style="border-top:3px solid {color};">
-                    <div style="font-size:9px;font-weight:700;letter-spacing:0.1em;
-                                text-transform:uppercase;color:#4b5563;
-                                margin-bottom:0.6rem;">{label}</div>
-                    <div class="aqi-number" style="color:{color};">{aqi}</div>
-                    <div style="font-size:12px;color:#6b7280;margin:0.2rem 0 0.5rem;
-                                font-family:'JetBrains Mono',monospace;">
-                        ± {ci_half}
-                    </div>
-                    <div style="font-size:12px;font-weight:700;letter-spacing:0.05em;
-                                color:{color};text-transform:uppercase;">{cat}</div>
-                    <div style="font-size:10px;color:#4b5563;margin-top:0.3rem;
-                                font-family:'JetBrains Mono',monospace;">{valid_str}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        # Calc percentages for CSS positioning
+        ci_lo_pct = (ci_lo / max_scale) * 100
+        ci_hi_pct = (ci_hi / max_scale) * 100
+        aqi_pct   = (aqi / max_scale) * 100
+        ci_width  = ci_hi_pct - ci_lo_pct
+
+        grid_html += f"""
+        <div class="horizon-card">
+            <div style="font-size:10px; font-weight:700; color:#444; margin-bottom:0.4rem;">
+                T+{h_key.upper()} 
+                <span style="color:#222; margin-left:1rem; font-weight:400;">{valid_str}</span>
+            </div>
+            <div style="display:flex; align-items:baseline; gap:0.5rem;">
+                <div style="font-size:24px; font-weight:700; color:#fff;">{aqi}</div>
+                <div style="font-size:10px; color:{color}; font-weight:700;">{cat.upper()}</div>
+            </div>
+            
+            <!-- Uncertainty Viz (Bullet Graph) -->
+            <div class="uncertainty-box">
+                <div class="ci-range" style="left:{ci_lo_pct}%; width:{ci_width}%;"></div>
+                <div class="point-prediction" style="left:{aqi_pct}%;"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:9px; color:#444; margin-top:0.3rem; font-family:monospace;">
+                <span>{ci_lo}</span>
+                <span>{ci_hi}</span>
+            </div>
+        </div>
+        """
+    
+    grid_html += '</div>'
+    st.markdown(grid_html, unsafe_allow_html=True)
 
 
-def render_info_chips(current: dict, generated_at: str):
-    """Row of 4 metadata info chips below the forecast cards."""
+def render_telemetry(current: dict, generated_at: str):
+    """Simplified telemetry footer for details not in the header."""
     ts_str    = current.get("timestamp", generated_at)
-    pollutant = current.get("primary_pollutant", "—")
-    source    = current.get("source", "—")
-    src_label = "AirNow Sensor" if source == "AirNow" else "Open-Meteo Model"
-
-    try:
-        gen_ts  = datetime.fromisoformat(generated_at)
-        now     = datetime.now(tz=gen_ts.tzinfo or TZ)
-        elapsed = max(0, int((now - gen_ts).total_seconds() / 60))
-        remain  = max(0, 60 - elapsed)
-        next_ref = f"in {remain} min" if remain > 0 else "any moment"
-    except Exception:
-        next_ref = "—"
-
-    st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-    cols = st.columns(4, gap="small")
-    chips = [
-        ("🕐", "LAST UPDATED",      format_timestamp(ts_str)),
-        ("💨", "PRIMARY POLLUTANT", pollutant),
-        ("📡", "DATA SOURCE",       src_label),
-        ("🔄", "NEXT REFRESH",      next_ref),
-    ]
-    for col, (icon, label, value) in zip(cols, chips):
-        with col:
-            st.markdown(
-                f"""
-                <div class="info-card">
-                    <div class="info-label">{icon} {label}</div>
-                    <div class="info-value">{value}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    pollutant = current.get("primary_pollutant", "PM2.5")
+    
+    st.markdown(
+        f"""
+        <div class="telemetry-row">
+            <div class="tel-item"><span class="tel-label">TSTAMP:</span><span class="tel-value">{format_timestamp(ts_str)}</span></div>
+            <div class="tel-item"><span class="tel-label">PARAM:</span><span class="tel-value">{pollutant}</span></div>
+            <div class="tel-item"><span class="tel-label">LOC:</span><span class="tel-value">FOLSOM_CA_STN_1</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_history_chart(history_72h: list, category: str):
@@ -996,14 +757,16 @@ def render_ai_chat(data: dict):
     last_a = st.session_state.get("chat_last_a", "")
 
     if last_q and last_a:
+        safe_q = html.escape(last_q)
+        safe_a = html.escape(last_a)
         st.markdown(
-            f'<div class="chat-q">{last_q}</div>',
+            f'<div class="chat-q">{safe_q}</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
             f'<div class="chat-a">'
             f'<div class="chat-a-label">✦ AI</div>'
-            f'{last_a}'
+            f'{safe_a}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1026,7 +789,7 @@ def render_ai_chat(data: dict):
             st.rerun()
 
         with st.spinner("Thinking..."):
-            answer = ask_ai(question, data)
+            answer = answer_question(question, data)
 
         st.session_state["chat_last_q"] = question
         st.session_state["chat_last_a"] = answer
@@ -1051,7 +814,7 @@ def render_about():
             &bull; Training data: 2022–present, Folsom monitoring station<br><br>
             <strong style="color:#f9fafb;">AI layer:</strong> Plain-English summaries and
             the Q&amp;A chatbox are powered by Google Gemini 2.0 Flash.<br><br>
-            <em>Presented at FLC Los Rios STEM Fair 2026</em>
+            <em>Built by Arsan, FLC Los Rios STEM Fair 2026</em>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1081,8 +844,11 @@ def render_error(message: str, kind: str = "error"):
 def main():
     inject_css()
 
-    # Auto-refresh every 5 minutes
-    st_autorefresh(interval=300_000, limit=None, key="aqi_autorefresh")
+    # ── Auto-refresh — avoid wiping input while user is chatting (Fix #8) ───
+    # If the user has just interacted with the input (ai_chat_input is in state), 
+    # we double the interval to 10 minutes to reduce the chance of a mid-type wipe.
+    interval_ms = 300_000 if not st.session_state.get("ai_chat_input") else 600_000
+    st_autorefresh(interval=interval_ms, limit=None, key="aqi_autorefresh")
 
     # ── Load data ─────────────────────────────────────────────────────────
     data = None
@@ -1137,36 +903,29 @@ def main():
 
     # ── Render ────────────────────────────────────────────────────────────
     try:
-        render_header(generated_at)
-
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+        render_header(generated_at, current)
 
         if sensor_missing:
             render_error(
-                '⚠️ <span style="background:#374151;border-radius:6px;'
-                'padding:2px 8px;font-size:11px;margin-left:4px;color:#9ca3af;">'
-                'Sensor reading unavailable</span>',
+                'SYSTEM_MSG: LOCAL_SENSOR_OFFLINE // FALLBACK_TO_OPNMETEO_MODEL',
                 kind="warn",
             )
 
         render_gauge(aqi, category, color)
         render_advisory(category, color)
 
-        # ── AI Summary (shown if backend has GEMINI_API_KEY set) ──────────
         render_ai_summary(data)
 
         st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
         render_forecast_cards(forecasts)
-        render_info_chips(current, generated_at)
+        render_telemetry(current, generated_at)
 
-        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        st.markdown("<div style='height:1rem; border-bottom:1px solid #111; margin-bottom:1rem;'></div>", unsafe_allow_html=True)
 
         render_history_chart(history_72h, category)
-
-        # ── AI Chatbox ────────────────────────────────────────────────────
         render_ai_chat(data)
 
-        st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border:none; border-top:1px solid #111; margin:2rem 0;'>", unsafe_allow_html=True)
 
         render_about()
         render_footer()

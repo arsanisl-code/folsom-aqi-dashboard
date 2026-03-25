@@ -109,7 +109,7 @@ def _get_gemini_key() -> str:
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
 def inject_css():
-    st.markdown(textwrap.dedent("""
+    st.html("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 
@@ -205,24 +205,19 @@ def inject_css():
         font-size: 9px;
         color: #555;
         font-weight: 700;
-    }
-    .tel-value {
+    }}
+    .tel-value {{
         font-size: 9px;
         color: #AAA;
-    }
+    }}
 
     /* ── AI SUMMARY ── */
-    .ai-summary-card {
+    .ai-summary-card {{
         background: #0D0D0D;
         border: 1px solid #222;
         border-left: 2px solid #555;
         padding: 0.75rem 1rem;
         margin-bottom: 1.5rem;
-    }
-    .ai-summary-label {
-        font-size: 10px;
-        font-weight: 700;
-        color: #3b82f6;
         margin-bottom: 0.3rem;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -277,7 +272,7 @@ def inject_css():
         .forecast-grid { grid-template-columns: 1fr; }
     }
     </style>
-    """), unsafe_allow_html=True)
+    """)
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -565,7 +560,7 @@ def render_header(generated_at: str, current: dict):
     except Exception:
         refr_ttl = "—"
 
-    st.markdown(textwrap.dedent(f"""
+    st.html(f"""
         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1rem; border-bottom:1px solid #222; padding-bottom:0.5rem;">
             <div>
                 <div class="header-title">FOLSOM_AQI_MONITOR</div>
@@ -578,7 +573,7 @@ def render_header(generated_at: str, current: dict):
                 <div class="tel-item"><span class="tel-label">REFR.TTL:</span><span class="tel-value">{refr_ttl}</span></div>
             </div>
         </div>
-    """), unsafe_allow_html=True)
+    """)
 
 
 def render_gauge(current_aqi: int, category: str, color: str):
@@ -637,12 +632,12 @@ def render_ai_summary(data: dict):
     if not summary:
         return   # Backend hasn't generated it yet (no GEMINI_API_KEY set on server)
 
-    st.markdown(textwrap.dedent(f"""
+    st.html(f"""
         <div class="ai-summary-card">
             <div class="ai-summary-label">✦ AI Summary</div>
             <div class="ai-summary-text">{summary}</div>
         </div>
-    """), unsafe_allow_html=True)
+    """)
 
 
 def render_forecast_cards(forecasts: dict):
@@ -696,7 +691,7 @@ def render_forecast_cards(forecasts: dict):
         """)
     
     grid_html += '</div>'
-    st.markdown(grid_html, unsafe_allow_html=True)
+    st.html(grid_html)
 
 
 def render_telemetry(current: dict, generated_at: str):
@@ -704,13 +699,13 @@ def render_telemetry(current: dict, generated_at: str):
     ts_str    = current.get("timestamp", generated_at)
     pollutant = current.get("primary_pollutant", "PM2.5")
     
-    st.markdown(textwrap.dedent(f"""
+    st.html(f"""
         <div class="telemetry-row">
             <div class="tel-item"><span class="tel-label">TSTAMP:</span><span class="tel-value">{format_timestamp(ts_str)}</span></div>
             <div class="tel-item"><span class="tel-label">PARAM:</span><span class="tel-value">{pollutant}</span></div>
             <div class="tel-item"><span class="tel-label">LOC:</span><span class="tel-value">FOLSOM_CA_STN_1</span></div>
         </div>
-    """), unsafe_allow_html=True)
+    """)
 
 
 def render_history_chart(history_72h: list, category: str):

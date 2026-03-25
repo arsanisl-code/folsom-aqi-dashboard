@@ -9,6 +9,7 @@ Deploy:       Push to GitHub → Streamlit Community Cloud
 import html
 import os
 import sys
+import textwrap
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -108,7 +109,7 @@ def _get_gemini_key() -> str:
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
 def inject_css():
-    st.markdown("""
+    st.markdown(textwrap.dedent("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 
@@ -151,66 +152,72 @@ def inject_css():
         border-color: #444444;
     }
 
-    /* ── TELEMETRY BAR (Replaces Info Chips) ── */
-    .telemetry-row {
-        display: flex;
-        gap: 1.5rem;
-        padding: 0.4rem 0.75rem;
-        background: #111111;
-        border: 1px solid #222222;
-        border-radius: 2px;
-        margin-bottom: 0.75rem;
-        font-size: 11px;
-        color: #888888;
-        font-family: 'JetBrains Mono', monospace;
-    }
-    .tel-item { display: flex; gap: 0.5rem; }
-    .tel-label { color: #555555; font-weight: 700; }
-    .tel-value { color: #aaaaaa; }
-
-    /* ── UNCERTAINTY VISUALIZATION (Bullet Graph) ── */
     .uncertainty-box {
-        height: 6px;
-        background: #1a1a1a;
-        width: 100%;
-        margin-top: 0.5rem;
         position: relative;
+        height: 6px;
+        background: #111;
         border-radius: 1px;
+        margin: 0.8rem 0 0.5rem 0;
+        overflow: hidden;
     }
     .ci-range {
         position: absolute;
         height: 100%;
-        background: #333333;
-        border-radius: 1px;
+        background: #333;
+        opacity: 0.6;
     }
     .point-prediction {
         position: absolute;
-        top: -3px;
-        height: 12px;
-        width: 2px;
-        background: #ffffff;
-        z-index: 10;
+        height: 100%;
+        width: 3px;
+        background: #fff;
+        box-shadow: 0 0 5px #fff;
+        z-index: 2;
     }
 
-    /* ── ADVISORY ── */
-    .advisory-banner {
-        border-radius: 2px;
-        padding: 0.5rem 0.75rem;
-        margin-bottom: 0.5rem;
+    /* ── HEADER & TELEMETRY ── */
+    .header-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #fff;
+        letter-spacing: 0.05em;
+    }
+    .header-sub {
+        font-size: 10px;
+        color: #444;
+        font-weight: 400;
+    }
+    .telemetry-row {
         display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        border: 1px solid rgba(255,255,255,0.1);
-        font-size: 12px;
+        gap: 1.5rem;
+        padding: 0.5rem;
+        background: #111;
+        border: 1px solid #222;
+        border-radius: 2px;
+        margin-bottom: 1rem;
+    }
+    .tel-item {
+        display: flex;
+        gap: 0.4rem;
+        align-items: baseline;
+    }
+    .tel-label {
+        font-size: 9px;
+        color: #555;
+        font-weight: 700;
+    }
+    .tel-value {
+        font-size: 9px;
+        color: #AAA;
     }
 
     /* ── AI SUMMARY ── */
     .ai-summary-card {
-        background: #050505;
-        border: 1px solid #1a2a3a;
-        border-radius: 2px;
+        background: #0D0D0D;
+        border: 1px solid #222;
+        border-left: 2px solid #555;
         padding: 0.75rem 1rem;
-        margin-bottom: 0.75rem;
+        margin-bottom: 1.5rem;
     }
     .ai-summary-label {
         font-size: 10px;
@@ -270,7 +277,7 @@ def inject_css():
         .forecast-grid { grid-template-columns: 1fr; }
     }
     </style>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -558,8 +565,7 @@ def render_header(generated_at: str, current: dict):
     except Exception:
         refr_ttl = "—"
 
-    st.markdown(
-        f"""
+    st.markdown(textwrap.dedent(f"""
         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1rem; border-bottom:1px solid #222; padding-bottom:0.5rem;">
             <div>
                 <div class="header-title">FOLSOM_AQI_MONITOR</div>
@@ -572,9 +578,7 @@ def render_header(generated_at: str, current: dict):
                 <div class="tel-item"><span class="tel-label">REFR.TTL:</span><span class="tel-value">{refr_ttl}</span></div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """), unsafe_allow_html=True)
 
 
 def render_gauge(current_aqi: int, category: str, color: str):
@@ -633,15 +637,12 @@ def render_ai_summary(data: dict):
     if not summary:
         return   # Backend hasn't generated it yet (no GEMINI_API_KEY set on server)
 
-    st.markdown(
-        f"""
+    st.markdown(textwrap.dedent(f"""
         <div class="ai-summary-card">
             <div class="ai-summary-label">✦ AI Summary</div>
             <div class="ai-summary-text">{summary}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """), unsafe_allow_html=True)
 
 
 def render_forecast_cards(forecasts: dict):
@@ -671,28 +672,28 @@ def render_forecast_cards(forecasts: dict):
         aqi_pct   = (aqi / max_scale) * 100
         ci_width  = ci_hi_pct - ci_lo_pct
 
-        grid_html += f"""
-        <div class="horizon-card">
-            <div style="font-size:10px; font-weight:700; color:#444; margin-bottom:0.4rem;">
-                T+{h_key.upper()} 
-                <span style="color:#222; margin-left:1rem; font-weight:400;">{valid_str}</span>
+        grid_html += textwrap.dedent(f"""
+            <div class="horizon-card">
+                <div style="font-size:10px; font-weight:700; color:#444; margin-bottom:0.4rem;">
+                    T+{h_key.upper()} 
+                    <span style="color:#222; margin-left:1rem; font-weight:400;">{valid_str}</span>
+                </div>
+                <div style="display:flex; align-items:baseline; gap:0.5rem;">
+                    <div style="font-size:24px; font-weight:700; color:#fff;">{aqi}</div>
+                    <div style="font-size:10px; color:{color}; font-weight:700;">{cat.upper()}</div>
+                </div>
+                
+                <!-- Uncertainty Viz (Bullet Graph) -->
+                <div class="uncertainty-box">
+                    <div class="ci-range" style="left:{ci_lo_pct}%; width:{ci_width}%;"></div>
+                    <div class="point-prediction" style="left:{aqi_pct}%;"></div>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:9px; color:#444; margin-top:0.3rem; font-family:monospace;">
+                    <span>{ci_lo}</span>
+                    <span>{ci_hi}</span>
+                </div>
             </div>
-            <div style="display:flex; align-items:baseline; gap:0.5rem;">
-                <div style="font-size:24px; font-weight:700; color:#fff;">{aqi}</div>
-                <div style="font-size:10px; color:{color}; font-weight:700;">{cat.upper()}</div>
-            </div>
-            
-            <!-- Uncertainty Viz (Bullet Graph) -->
-            <div class="uncertainty-box">
-                <div class="ci-range" style="left:{ci_lo_pct}%; width:{ci_width}%;"></div>
-                <div class="point-prediction" style="left:{aqi_pct}%;"></div>
-            </div>
-            <div style="display:flex; justify-content:space-between; font-size:9px; color:#444; margin-top:0.3rem; font-family:monospace;">
-                <span>{ci_lo}</span>
-                <span>{ci_hi}</span>
-            </div>
-        </div>
-        """
+        """)
     
     grid_html += '</div>'
     st.markdown(grid_html, unsafe_allow_html=True)
@@ -703,16 +704,13 @@ def render_telemetry(current: dict, generated_at: str):
     ts_str    = current.get("timestamp", generated_at)
     pollutant = current.get("primary_pollutant", "PM2.5")
     
-    st.markdown(
-        f"""
+    st.markdown(textwrap.dedent(f"""
         <div class="telemetry-row">
             <div class="tel-item"><span class="tel-label">TSTAMP:</span><span class="tel-value">{format_timestamp(ts_str)}</span></div>
             <div class="tel-item"><span class="tel-label">PARAM:</span><span class="tel-value">{pollutant}</span></div>
             <div class="tel-item"><span class="tel-label">LOC:</span><span class="tel-value">FOLSOM_CA_STN_1</span></div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """), unsafe_allow_html=True)
 
 
 def render_history_chart(history_72h: list, category: str):

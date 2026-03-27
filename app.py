@@ -93,15 +93,14 @@ You have knowledge in three areas:
 1. CURRENT FORECAST DATA — provided in each request.
 
 2. MODEL ARCHITECTURE — The system uses LightGBM ensemble models with four \
-forecast horizons (6h, 12h, 24h, 48h). Features include AQI lags, PM2.5 \
-lags, boundary layer height, wind speed, aerosol optical depth (satellite \
-smoke detection), wildfire proxy features (Hot-Dry-Windy Index, Vapor \
-Pressure Deficit, antecedent precipitation deficit), pressure front \
-differencing, and cyclical time encodings. Models use Huber loss for \
-robustness to wildfire smoke spikes. Quantile models (1st and 99th \
-percentile) provide confidence intervals. Training data spans 2022–present \
-from Open-Meteo and AirNow sensor networks. Walk-forward validation over the \
-last 30 days generates honest accuracy estimates.
+forecast horizons (6h, 12h, 24h, 48h). Features include AQI and PM2.5 lags, \
+boundary layer height, wind speed and direction (decomposed into U/V vectors), \
+true NWP weather forecasts (at T+h), aerosol optical depth (satellite \
+smoke detection), wildfire proxies (HDWI, VPD), pressure front \
+differencing, and cyclical time encodings. Huber loss handles smoke spikes. \
+Quantile models (0.5th and 99.5th percentile) provide 99% confidence intervals \
+calibrated for 90% real-world coverage. Training data: 2020–2026. \
+A 2025 holdout backtest proves seasonal robustness across all 12 months.
 
 3. AQI HEALTH GUIDANCE (US EPA scale):
    Good (0–50): Safe for everyone.
@@ -860,12 +859,47 @@ def render_advisory(category: str, color: str):
 def render_ai_summary(data: dict):
     """
     Render the AI-generated plain-English summary card.
-    Reads from data['ai_summary'] — generated hourly by inference.py.
-    If the field is empty (key missing or blank), the card is hidden entirely.
+    If the backend hasn't generated it, use the frontend's GEMINI API KEY to fetch it.
     """
     summary = data.get("ai_summary", "").strip()
+    
     if not summary:
-        return   # Backend hasn't generated it yet (no GEMINI_API_KEY set on server)
+        # Try to generate it locally in the frontend
+        api_key = _get_gemini_key()
+        if not api_key:
+            return
+            
+        context = _build_context(data)
+        prompt = (
+            "Using the forecast data below, write a single plain-English paragraph "
+            "(3-4 sentences) summarizing current air quality in Folsom for local residents. "
+            "Include: what the current AQI is and what it means in everyday terms, "
+            "whether conditions are expected to improve or worsen over the next 48 hours, "
+            "and one practical recommendation (e.g. whether outdoor activity is advisable). "
+            "Write for the general public — no jargon, no bullet points, no markdown.\n\n"
+            f"{context}"
+        )
+        
+        # Cache to session state so it doesn't regenerate every 5 min needlessly unless data changes
+        if "cached_ai_summary" not in st.session_state:
+            with st.spinner("Generating AI Summary..."):
+                summary = _call_gemini(prompt, api_key)
+            if not summary.startswith("⚠️") and "Something went wrong" not in summary:
+                st.session_state.cached_ai_summary = summary
+                st.session_state.cached_summary_time = data.get("generated_at", "")
+        else:
+            # Only use cache if it was generated from this timestamp's data
+            if st.session_state.get("cached_summary_time") == data.get("generated_at", ""):
+                summary = st.session_state.cached_ai_summary
+            else:
+                with st.spinner("Generating AI Summary..."):
+                    summary = _call_gemini(prompt, api_key)
+                if not summary.startswith("⚠️") and "Something went wrong" not in summary:
+                    st.session_state.cached_ai_summary = summary
+                    st.session_state.cached_summary_time = data.get("generated_at", "")
+                
+    if not summary or summary.startswith("⚠️") or "Something went wrong" in summary:
+        return
 
     st.markdown(
         f"""
@@ -876,6 +910,7 @@ def render_ai_summary(data: dict):
         """,
         unsafe_allow_html=True,
     )
+
 
 
 def render_forecast_cards(forecasts: dict):

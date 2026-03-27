@@ -1074,18 +1074,28 @@ def render_about():
         st.markdown(
             """
             <div style="color:#9ca3af;font-size:13px;line-height:1.75;">
-            This dashboard uses a machine learning model trained on 2+ years of hourly
-            air quality and meteorological data for Folsom, CA.<br><br>
-            The model (<strong style="color:#f9fafb;">LightGBM</strong>) produces separate
-            forecasts for <strong style="color:#f9fafb;">6, 12, 24, and 48-hour horizons</strong>.
-            Confidence intervals represent the 1st–99th percentile range of expected outcomes
-            based on quantile regression.<br><br>
+            This dashboard forecasts PM2.5 Air Quality Index for Folsom, CA using a 
+            <strong style="color:#f9fafb;">physics-informed machine learning pipeline</strong> 
+            trained on <strong style="color:#f9fafb;">5+ years</strong> of hourly weather 
+            and air quality data (~45,000+ observations).<br><br>
+            
+            The engine uses <strong style="color:#f9fafb;">LightGBM</strong> with a
+            <strong style="color:#f9fafb;">residual prediction architecture</strong>—it 
+            forecasts the <em>change</em> in AQI rather than the absolute value. The model is 
+            trained on <strong style="color:#f9fafb;">130 engineered features</strong>, including 
+            local wind patterns, humidity, and upper-atmosphere physics (850hPa/700hPa temperature 
+            inversions). Quantile regression models (0.5th and 99.5th percentile) provide 
+            <strong style="color:#f9fafb;">99% confidence intervals</strong> calibrated for 
+            ~90% real-world coverage.<br><br>
+
             <strong style="color:#f9fafb;">Data sources:</strong><br>
-            &bull; Current readings: AirNow (U.S. EPA sensor network)<br>
-            &bull; Weather inputs: Open-Meteo historical and forecast API<br>
-            &bull; Training data: 2022–present, Folsom monitoring station<br><br>
-            <strong style="color:#f9fafb;">AI layer:</strong> Plain-English summaries and
-            the Q&amp;A chatbox are powered by Google Gemini 2.0 Flash.<br><br>
+            &bull; Live conditions: AirNow (U.S. EPA sensor network)<br>
+            &bull; Weather forecasts: Open-Meteo API<br>
+            &bull; Training data: 2021–2026, Folsom monitor records<br><br>
+
+            <strong style="color:#f9fafb;">AI layer:</strong> Summaries and the chatbox are 
+            powered by Google Gemini 2.5 Flash.<br><br>
+
             <em>Presented at FLC Los Rios STEM Fair 2026</em>
             </div>
             """,

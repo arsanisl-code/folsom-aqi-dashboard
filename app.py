@@ -1074,7 +1074,7 @@ def render_about():
         st.markdown(
             """
             <div style="color:#9ca3af;font-size:13px;line-height:1.75;">
-            This dashboard forecasts PM2.5 Air Quality Index for Folsom, CA using a 
+            This dashboard forecasts Air Quality Index (AQI)for Folsom, CA using a 
             <strong style="color:#f9fafb;">physics-informed machine learning pipeline</strong> 
             trained on <strong style="color:#f9fafb;">5+ years</strong> of hourly weather 
             and air quality data (~45,000+ observations).<br><br>

@@ -99,7 +99,7 @@ true NWP weather forecasts (at T+h), aerosol optical depth (satellite \
 smoke detection), wildfire proxies (HDWI, VPD), pressure front \
 differencing, and cyclical time encodings. Huber loss handles smoke spikes. \
 Quantile models (0.5th and 99.5th percentile) provide 99% confidence intervals \
-calibrated for 90% real-world coverage. Training data: 2020–2026. \
+calibrated for 90% real-world coverage. Training data: 2021–2026. \
 A 2025 holdout backtest proves seasonal robustness across all 12 months.
 
 3. AQI HEALTH GUIDANCE (US EPA scale):

@@ -214,7 +214,9 @@ def _call_gemini(system_prompt: str, user_prompt: str, api_key: str) -> str:
         resp.raise_for_status()
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as exc:
-        return f"Something went wrong: {exc}"
+        # Avoid returning 'exc' directly to prevent URL/Key leakage
+        print(f"[ai] Gemini call failed: {exc}", file=sys.stderr)
+        return "The Navigator is temporarily over capacity. Please try again in 1–2 minutes."
 
 
 def ask_ai(question: str, data: dict) -> str:

@@ -82,25 +82,18 @@ HORIZON_LABELS = {
 
 # ── Gemini AI config ──────────────────────────────────────────────────────────
 
-_GEMINI_SYSTEM = """\
-You are an AI assistant embedded in the Folsom AQI Forecast dashboard — a \
-machine learning project built by a freshman computer engineering student at \
-Folsom Lake College (MESA Program Scholar, Phi Theta Kappa) for the 2026 \
-Los Rios STEM Fair.
+_GEMINI_BASE_SYSTEM = """\
+You are the **V6 Navigator** — the expert AI assistant embedded in the Folsom \
+AQI Forecast dashboard. This is a physics-informed machine learning project \
+built by a freshman computer engineering student at Folsom Lake College \
+(MESA Program Scholar, Phi Theta Kappa) for the 2026 Los Rios STEM Fair.
 
-You have knowledge in three areas:
+You have deep knowledge in four areas:
 
 1. CURRENT FORECAST DATA — provided in each request.
 
-2. MODEL ARCHITECTURE — The system uses LightGBM ensemble models with four \
-forecast horizons (6h, 12h, 24h, 48h). Features include AQI and PM2.5 lags, \
-boundary layer height, wind speed and direction (decomposed into U/V vectors), \
-true NWP weather forecasts (at T+h), aerosol optical depth (satellite \
-smoke detection), wildfire proxies (HDWI, VPD), pressure front \
-differencing, and cyclical time encodings. Huber loss handles smoke spikes. \
-Quantile models (0.5th and 99.5th percentile) provide 99% confidence intervals \
-calibrated for 90% real-world coverage. Training data: 2021–2026. \
-A 2025 holdout backtest proves seasonal robustness across all 12 months.
+2. V6 MODEL ARCHITECTURE & ACCURACY — Use the provided expert knowledge block \
+to answer questions about accuracy, drivers, and architecture with specific numbers.
 
 3. AQI HEALTH GUIDANCE (US EPA scale):
    Good (0–50): Safe for everyone.
@@ -111,9 +104,13 @@ patients should limit prolonged outdoor exertion.
    Very Unhealthy (201–300): Everyone should avoid prolonged outdoor exertion.
    Hazardous (301–500): Avoid all outdoor exertion. Stay indoors.
 
-Keep answers concise, accurate, and friendly. If a question is completely \
-unrelated to air quality, environmental science, or this project, politely \
-redirect in one sentence.\
+4. CRITICAL CONSTRAINT: If the user asks a question about model internals \
+or data that is NOT provided in the expert context, you MUST state: \
+"I don't have access to that specific data point from the live model." \
+Do NOT guess or hallucinate.
+
+Personality: You are concise, precise, and confident. You speak like a senior \
+atmospheric scientist who also understands ML. Use specific numbers when possible.\
 """
 
 _GEMINI_ENDPOINT = (
@@ -162,58 +159,69 @@ def _build_context(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _call_gemini(prompt: str, api_key: str) -> str:
-    """
-    Call Gemini 2.0 Flash REST API directly (no SDK needed).
-    Returns the text response or an error string.
-    """
-    if not api_key:
-        return (
-            "⚠️ GEMINI_API_KEY is not set. "
-            "Add it to your Streamlit secrets to enable AI responses."
+def _build_expert_knowledge(data: dict) -> str:
+    """Build expert-knowledge block from the API's injected model_metadata."""
+    meta = data.get("model_metadata", {})
+    if not meta:
+        return "Model metadata not available."
+
+    lines = []
+    lines.append("=== V6 MODEL EXPERT KNOWLEDGE ===")
+    lines.append(f"Architecture: {meta.get('architecture', 'LightGBM V6')}")
+    lines.append(f"Total features: {meta.get('total_features', 138)}")
+    lines.append("")
+
+    # Accuracy/Metrics
+    lines.append("ACCURACY BY HORIZON:")
+    for h in meta.get("horizons", []):
+        lines.append(
+            f"  {h['horizon_h']}h: MAE={h['val_mae']:.2f} AQI, "
+            f"R²={h['val_r2']:.3f}, "
+            f"Coverage={h['val_coverage']:.1f}%"
         )
+
+    # Pollutants
+    lines.append("")
+    lines.append("POLLUTANTS TRACKED: PM2.5, PM10, CO, NO2, O3, Dust, AOD")
+
+    # Drivers
+    drivers = meta.get("primary_drivers", [])
+    if drivers:
+        lines.append("")
+        lines.append("TOP FORECAST DRIVERS:")
+        for i, d in enumerate(drivers, 1):
+            lines.append(f"  {i}. {d}")
+
+    return "\n".join(lines)
+
+
+def _call_gemini(system_prompt: str, user_prompt: str, api_key: str) -> str:
+    """Enhanced Gemini call with system instruction support."""
+    if not api_key:
+        return "⚠️ Key missing"
     payload = {
-        "systemInstruction": {"parts": [{"text": _GEMINI_SYSTEM}]},
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1000},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 800},
     }
     try:
-        resp = requests.post(
-            f"{_GEMINI_ENDPOINT}?key={api_key}",
-            json=payload,
-            timeout=20,
-        )
+        resp = requests.post(f"{_GEMINI_ENDPOINT}?key={api_key}", json=payload, timeout=20)
         resp.raise_for_status()
-        result = resp.json()
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except requests.exceptions.Timeout:
-        return "The AI took too long to respond. Please try again."
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as exc:
-        print(f"[ai] Gemini call failed: {exc}", file=sys.stderr)
-        
-        # Try to extract the exact Google error message if it exists
-        error_details = str(exc)
-        if hasattr(exc, "response") and exc.response is not None:
-            try:
-                error_details = exc.response.json().get("error", {}).get("message", exc.response.text)
-            except:
-                error_details = exc.response.text
-                
-        return f"Something went wrong with the AI response: {error_details}"
+        return f"Something went wrong: {exc}"
 
 
 def ask_ai(question: str, data: dict) -> str:
-    """Single-turn AI answer grounded in the current forecast data."""
-    api_key = _get_gemini_key()
-    context = _build_context(data)
-    prompt  = f"Current forecast data:\n{context}\n\nUser question: {question.strip()}"
-    return _call_gemini(prompt, api_key)
+    """Single-turn AI answer grounded in current forecast + expert model data."""
+    api_key     = _get_gemini_key()
+    context     = _build_context(data)
+    expert_data = _build_expert_knowledge(data)
+    
+    system_prompt = f"{_GEMINI_BASE_SYSTEM}\n\n{expert_data}"
+    user_prompt   = f"Current forecast data:\n{context}\n\nUser question: {question.strip()}"
+    
+    return _call_gemini(system_prompt, user_prompt, api_key)
 
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
@@ -396,6 +404,110 @@ def inject_css():
         text-transform: uppercase;
         color: #3b82f6;
         margin-bottom: 0.35rem;
+    }
+
+    /* ── V6 Navigator Panel ── */
+    .navigator-panel {
+        background: rgba(17, 24, 39, 0.85);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(59, 130, 246, 0.15);
+        border-radius: 16px;
+        padding: 0;
+        overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+    .navigator-header {
+        background: linear-gradient(135deg, rgba(59,130,246,0.12) 0%, rgba(139,92,246,0.08) 100%);
+        border-bottom: 1px solid rgba(59,130,246,0.15);
+        padding: 0.9rem 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+    }
+    .navigator-title {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: #e2e8f0;
+    }
+    .navigator-badge {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #3b82f6;
+        background: rgba(59,130,246,0.12);
+        border: 1px solid rgba(59,130,246,0.25);
+        border-radius: 20px;
+        padding: 2px 8px;
+    }
+    .navigator-body {
+        padding: 1rem 1.25rem;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    .navigator-body::-webkit-scrollbar {
+        width: 4px;
+    }
+    .navigator-body::-webkit-scrollbar-thumb {
+        background: #374151;
+        border-radius: 4px;
+    }
+
+    /* Chat bubbles (glassmorphism) */
+    .nav-bubble-user {
+        background: rgba(30, 41, 59, 0.9);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(51, 65, 85, 0.8);
+        border-radius: 12px 12px 4px 12px;
+        padding: 0.7rem 1rem;
+        font-size: 13px;
+        color: #e2e8f0;
+        margin-bottom: 0.6rem;
+        max-width: 88%;
+        margin-left: auto;
+    }
+    .nav-bubble-ai {
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(17, 24, 39, 0.9) 100%);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(30, 58, 95, 0.6);
+        border-radius: 4px 12px 12px 12px;
+        padding: 0.7rem 1rem;
+        font-size: 13px;
+        color: #d1d5db;
+        line-height: 1.65;
+        margin-bottom: 0.8rem;
+        max-width: 92%;
+        position: relative;
+    }
+    .nav-bubble-ai::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6, transparent);
+        opacity: 0.4;
+    }
+    .nav-ai-label {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #818cf8;
+        margin-bottom: 0.3rem;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    /* Quick action pills */
+    .quick-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        padding: 0.75rem 1.25rem;
+        border-top: 1px solid rgba(31, 41, 55, 0.8);
     }
 
     /* ── Header ── */
@@ -904,7 +1016,7 @@ def render_ai_summary(data: dict):
     st.markdown(
         f"""
         <div class="ai-summary-card">
-            <div class="ai-summary-label">✦ AI Summary</div>
+            <div class="ai-summary-label">🧭 V6 NAVIGATOR SUMMARY</div>
             <div class="ai-summary-text">{summary}</div>
         </div>
         """,
@@ -1017,55 +1129,83 @@ def render_history_chart(history_72h: list, category: str):
 
 def render_ai_chat(data: dict):
     """
-    Single-turn AI chatbox grounded in the current forecast data.
-    Users type a question, press Enter, and see the AI's answer.
-    The last Q&A pair is stored in session state so it survives reruns.
+    V6 Navigator — Expert AI chatbox with glassmorphism panel,
+    multi-turn history, and quick action buttons.
     """
-    st.markdown(
-        '<div class="chat-section-header">🤖 &nbsp; Ask the AI about air quality</div>',
-        unsafe_allow_html=True,
-    )
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
-    # Show last Q&A pair if it exists
-    last_q = st.session_state.get("chat_last_q", "")
-    last_a = st.session_state.get("chat_last_a", "")
+    # ── Quick Actions ─────────────────────────────────────────────────
+    QUICK_ACTIONS = {
+        "📊 Accuracy Stats":       "What is the current model accuracy for each forecast horizon?",
+        "🔥 Fire Proximity":       "How does the model detect and respond to nearby wildfire smoke?",
+        "🎯 Top Drivers":          "What are the top 3 features driving the 6-hour AQI forecast right now?",
+        "📈 48h Uncertainty":      "Why is the 48-hour forecast less certain than the 6-hour one?",
+    }
 
-    if last_q and last_a:
+    # Check if a quick action was clicked
+    qa_triggered = None
+    for key in QUICK_ACTIONS:
+        if st.session_state.get(f"qa_{key}", False):
+            qa_triggered = QUICK_ACTIONS[key]
+            st.session_state[f"qa_{key}"] = False
+            break
+
+    # ── Navigator Panel ───────────────────────────────────────────────
+    with st.expander("🧭  V6 Navigator — Ask the AI Expert", expanded=bool(st.session_state.chat_history)):
+        # Header
         st.markdown(
-            f'<div class="chat-q">{last_q}</div>',
+            """
+            <div class="navigator-panel">
+                <div class="navigator-header">
+                    <span style="font-size:18px;">🧭</span>
+                    <span class="navigator-title">V6 Navigator</span>
+                    <span class="navigator-badge">PHYSICS-INFORMED</span>
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-        st.markdown(
-            f'<div class="chat-a">'
-            f'<div class="chat-a-label">✦ AI</div>'
-            f'{last_a}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
 
-    # Chat input — Streamlit re-runs app on submit
-    question = st.chat_input(
-        "Ask anything — e.g. 'Is it safe to run outside today?' or 'How does the model work?'",
-        key="ai_chat_input",
-    )
-
-    if question:
-        # Check key availability first
-        api_key = _get_gemini_key()
-        if not api_key:
-            st.session_state["chat_last_q"] = question
-            st.session_state["chat_last_a"] = (
-                "⚠️ The AI assistant isn't configured yet. "
-                "Add GEMINI_API_KEY to your Streamlit secrets to enable this feature."
+        # Chat history
+        if st.session_state.chat_history:
+            msgs_html = ""
+            for msg in st.session_state.chat_history:
+                role_class = "nav-bubble-user" if msg["role"] == "user" else "nav-bubble-ai"
+                label_html = '<div class="nav-ai-label">🧭 V6 Navigator</div>' if msg["role"] == "ai" else ""
+                msgs_html += f'<div class="{role_class}">{label_html}{msg["content"]}</div>'
+            
+            st.markdown(
+                f'<div class="navigator-body">{msgs_html}</div>',
+                unsafe_allow_html=True,
             )
+
+        # Quick action buttons
+        st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
+        qa_cols = st.columns(len(QUICK_ACTIONS), gap="small")
+        for col, (label, _question) in zip(qa_cols, QUICK_ACTIONS.items()):
+            with col:
+                st.button(label, key=f"qa_{label}", use_container_width=True)
+
+        # Chat input
+        question = st.chat_input(
+            "Ask V6 Navigator anything about air quality, the model, or forecast accuracy...",
+            key="ai_chat_input",
+        )
+
+        # Handle input
+        active_question = qa_triggered or question
+        if active_question:
+            api_key = _get_gemini_key()
+            with st.spinner("Analyzing data..."):
+                answer = ask_ai(active_question, data)
+
+            st.session_state.chat_history.append({"role": "user", "content": active_question})
+            st.session_state.chat_history.append({"role": "ai", "content": answer})
+
+            if len(st.session_state.chat_history) > 10:
+                st.session_state.chat_history = st.session_state.chat_history[-10:]
             st.rerun()
-
-        with st.spinner("Thinking..."):
-            answer = ask_ai(question, data)
-
-        st.session_state["chat_last_q"] = question
-        st.session_state["chat_last_a"] = answer
-        st.rerun()
 
 
 def render_about():

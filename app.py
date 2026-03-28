@@ -83,17 +83,16 @@ HORIZON_LABELS = {
 # ── Gemini AI config ──────────────────────────────────────────────────────────
 
 _GEMINI_BASE_SYSTEM = """\
-You are the **V6 Navigator** — the expert AI assistant embedded in the Folsom \
-AQI Forecast dashboard. This is a physics-informed machine learning project \
-built by a freshman computer engineering student at Folsom Lake College \
-(MESA Program Scholar, Phi Theta Kappa) for the 2026 Los Rios STEM Fair.
+You are the **Folsom Navigator** — the expert AI assistant embedded in the \
+Folsom AQI Monitor dashboard. This system is a physics-informed expert \
+assistant built for the 2026 Los Rios STEM Fair.
 
 You have deep knowledge in four areas:
 
 1. CURRENT FORECAST DATA — provided in each request.
 
-2. V6 MODEL ARCHITECTURE & ACCURACY — Use the provided expert knowledge block \
-to answer questions about accuracy, drivers, and architecture with specific numbers.
+2. SYSTEM ARCHITECTURE & ACCURACY — Use the provided expert knowledge block \
+to answer questions about reliability and atmospheric drivers. 
 
 3. AQI HEALTH GUIDANCE (US EPA scale):
    Good (0–50): Safe for everyone.
@@ -104,13 +103,19 @@ patients should limit prolonged outdoor exertion.
    Very Unhealthy (201–300): Everyone should avoid prolonged outdoor exertion.
    Hazardous (301–500): Avoid all outdoor exertion. Stay indoors.
 
-4. CRITICAL CONSTRAINT: If the user asks a question about model internals \
-or data that is NOT provided in the expert context, you MUST state: \
-"I don't have access to that specific data point from the live model." \
-Do NOT guess or hallucinate.
+4. CRITICAL PERSONA CONSTRAINTS:
+   - NEVER mention 'V6', 'models', 'LightGBM', or 'machine learning'.
+   - Refer to the system as the 'Navigator' or 'Expert System'.
+   - Re-frame technical metrics: instead of 'MAE', use 'average error margin'. 
+     Instead of 'R-squared' or 'R2', use 'prediction reliability'.
+     Instead of 'Features', use 'Atmospheric factors' or 'Environmental drivers'.
+   - If asked how you work, explain that you use an 'ensemble of physics-informed \
+atmospheric patterns' and 'historical data signatures' to predict air quality.
+   - If data is missing, say: "I don't have access to that specific atmospheric \
+detail from the live system."
 
-Personality: You are concise, precise, and confident. You speak like a senior \
-atmospheric scientist who also understands ML. Use specific numbers when possible.\
+Personality: You are concise, precise, and authoritative. You speak like a senior \
+atmospheric scientist who simplifies complex data for the Folsom public.\
 """
 
 _GEMINI_ENDPOINT = (
@@ -1016,7 +1021,7 @@ def render_ai_summary(data: dict):
     st.markdown(
         f"""
         <div class="ai-summary-card">
-            <div class="ai-summary-label">🧭 V6 NAVIGATOR SUMMARY</div>
+            <div class="ai-summary-label">🧭 NAVIGATION SUMMARY</div>
             <div class="ai-summary-text">{summary}</div>
         </div>
         """,
@@ -1129,38 +1134,21 @@ def render_history_chart(history_72h: list, category: str):
 
 def render_ai_chat(data: dict):
     """
-    V6 Navigator — Expert AI chatbox with glassmorphism panel,
-    multi-turn history, and quick action buttons.
+    Navigator — Expert Assistant with glassmorphism panel.
+    Removed technical jargon (V6, Quick Actions).
     """
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # ── Quick Actions ─────────────────────────────────────────────────
-    QUICK_ACTIONS = {
-        "📊 Accuracy Stats":       "What is the current model accuracy for each forecast horizon?",
-        "🔥 Fire Proximity":       "How does the model detect and respond to nearby wildfire smoke?",
-        "🎯 Top Drivers":          "What are the top 3 features driving the 6-hour AQI forecast right now?",
-        "📈 48h Uncertainty":      "Why is the 48-hour forecast less certain than the 6-hour one?",
-    }
-
-    # Check if a quick action was clicked
-    qa_triggered = None
-    for key in QUICK_ACTIONS:
-        if st.session_state.get(f"qa_{key}", False):
-            qa_triggered = QUICK_ACTIONS[key]
-            st.session_state[f"qa_{key}"] = False
-            break
-
     # ── Navigator Panel ───────────────────────────────────────────────
-    with st.expander("🧭  V6 Navigator — Ask the AI Expert", expanded=bool(st.session_state.chat_history)):
+    with st.expander("🧭  Navigator — Expert Air Quality Assistant", expanded=bool(st.session_state.chat_history)):
         # Header
         st.markdown(
             """
             <div class="navigator-panel">
                 <div class="navigator-header">
                     <span style="font-size:18px;">🧭</span>
-                    <span class="navigator-title">V6 Navigator</span>
-                    <span class="navigator-badge">PHYSICS-INFORMED</span>
+                    <span class="navigator-title">Folsom Navigator</span>
                 </div>
             </div>
             """,
@@ -1172,7 +1160,7 @@ def render_ai_chat(data: dict):
             msgs_html = ""
             for msg in st.session_state.chat_history:
                 role_class = "nav-bubble-user" if msg["role"] == "user" else "nav-bubble-ai"
-                label_html = '<div class="nav-ai-label">🧭 V6 Navigator</div>' if msg["role"] == "ai" else ""
+                label_html = '<div class="nav-ai-label">🧭 Navigator</div>' if msg["role"] == "ai" else ""
                 msgs_html += f'<div class="{role_class}">{label_html}{msg["content"]}</div>'
             
             st.markdown(
@@ -1180,27 +1168,18 @@ def render_ai_chat(data: dict):
                 unsafe_allow_html=True,
             )
 
-        # Quick action buttons
-        st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
-        qa_cols = st.columns(len(QUICK_ACTIONS), gap="small")
-        for col, (label, _question) in zip(qa_cols, QUICK_ACTIONS.items()):
-            with col:
-                st.button(label, key=f"qa_{label}", use_container_width=True)
-
         # Chat input
         question = st.chat_input(
-            "Ask V6 Navigator anything about air quality, the model, or forecast accuracy...",
+            "Ask the Navigator anything about air quality or the forecast...",
             key="ai_chat_input",
         )
 
-        # Handle input
-        active_question = qa_triggered or question
-        if active_question:
+        if question:
             api_key = _get_gemini_key()
             with st.spinner("Analyzing data..."):
-                answer = ask_ai(active_question, data)
+                answer = ask_ai(question, data)
 
-            st.session_state.chat_history.append({"role": "user", "content": active_question})
+            st.session_state.chat_history.append({"role": "user", "content": question})
             st.session_state.chat_history.append({"role": "ai", "content": answer})
 
             if len(st.session_state.chat_history) > 10:

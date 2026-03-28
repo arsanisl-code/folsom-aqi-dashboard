@@ -165,37 +165,31 @@ def _build_context(data: dict) -> str:
 
 
 def _build_expert_knowledge(data: dict) -> str:
-    """Build expert-knowledge block from the API's injected model_metadata."""
+    """Build a compact atmospheric-drivers block from system metadata."""
     meta = data.get("model_metadata", {})
     if not meta:
-        return "Model metadata not available."
+        return "Atmospheric drivers: AQI history, weather, inversion strength, fire proximity index."
 
     lines = []
-    lines.append("=== V6 MODEL EXPERT KNOWLEDGE ===")
-    lines.append(f"Architecture: {meta.get('architecture', 'LightGBM V6')}")
-    lines.append(f"Total features: {meta.get('total_features', 138)}")
+    lines.append("=== SYSTEM LOGIC & RELIABILITY ===")
+    lines.append(f"Confidence baseline: {meta.get('architecture', 'Physics-informed ensemble')}")
+    lines.append(f"Environmental factors tracked: {meta.get('total_features', 138)}")
     lines.append("")
 
     # Accuracy/Metrics
-    lines.append("ACCURACY BY HORIZON:")
+    lines.append("RELIABILITY ESTIMATES (by horizon):")
     for h in meta.get("horizons", []):
         lines.append(
-            f"  {h['horizon_h']}h: MAE={h['val_mae']:.2f} AQI, "
-            f"R²={h['val_r2']:.3f}, "
-            f"Coverage={h['val_coverage']:.1f}%"
+            f"  {h['horizon_h']}h: Error Margin ±{h['val_mae']:.1f} AQI, "
+            f"Rel.={h['val_r2']:.2f}"
         )
-
-    # Pollutants
-    lines.append("")
-    lines.append("POLLUTANTS TRACKED: PM2.5, PM10, CO, NO2, O3, Dust, AOD")
 
     # Drivers
     drivers = meta.get("primary_drivers", [])
     if drivers:
         lines.append("")
-        lines.append("TOP FORECAST DRIVERS:")
-        for i, d in enumerate(drivers, 1):
-            lines.append(f"  {i}. {d}")
+        lines.append("TOP ATMOSPHERIC DRIVERS:")
+        lines.append(", ".join(drivers))
 
     return "\n".join(lines)
 
@@ -977,47 +971,13 @@ def render_advisory(category: str, color: str):
 
 def render_ai_summary(data: dict):
     """
-    Render the AI-generated plain-English summary card.
-    If the backend hasn't generated it, use the frontend's GEMINI API KEY to fetch it.
+    Render the AI-generated navigation summary.
+    This reads from a pre-generated summary in the dataset to avoid 429 errors.
     """
     summary = data.get("ai_summary", "").strip()
     
-    if not summary:
-        # Try to generate it locally in the frontend
-        api_key = _get_gemini_key()
-        if not api_key:
-            return
-            
-        context = _build_context(data)
-        prompt = (
-            "Using the forecast data below, write a single plain-English paragraph "
-            "(3-4 sentences) summarizing current air quality in Folsom for local residents. "
-            "Include: what the current AQI is and what it means in everyday terms, "
-            "whether conditions are expected to improve or worsen over the next 48 hours, "
-            "and one practical recommendation (e.g. whether outdoor activity is advisable). "
-            "Write for the general public — no jargon, no bullet points, no markdown.\n\n"
-            f"{context}"
-        )
-        
-        # Cache to session state so it doesn't regenerate every 5 min needlessly unless data changes
-        if "cached_ai_summary" not in st.session_state:
-            with st.spinner("Generating AI Summary..."):
-                summary = _call_gemini(prompt, api_key)
-            if not summary.startswith("⚠️") and "Something went wrong" not in summary:
-                st.session_state.cached_ai_summary = summary
-                st.session_state.cached_summary_time = data.get("generated_at", "")
-        else:
-            # Only use cache if it was generated from this timestamp's data
-            if st.session_state.get("cached_summary_time") == data.get("generated_at", ""):
-                summary = st.session_state.cached_ai_summary
-            else:
-                with st.spinner("Generating AI Summary..."):
-                    summary = _call_gemini(prompt, api_key)
-                if not summary.startswith("⚠️") and "Something went wrong" not in summary:
-                    st.session_state.cached_ai_summary = summary
-                    st.session_state.cached_summary_time = data.get("generated_at", "")
-                
-    if not summary or summary.startswith("⚠️") or "Something went wrong" in summary:
+    # Hide if summary is missing or is an error message
+    if not summary or any(x in summary for x in ["Something went wrong", "capacity", "offline"]):
         return
 
     st.markdown(
@@ -1136,11 +1096,12 @@ def render_history_chart(history_72h: list, category: str):
 
 def render_ai_chat(data: dict):
     """
-    Navigator — Expert Assistant with glassmorphism panel.
-    Removed technical jargon (V6, Quick Actions).
+    Navigator — Expert Assistant with rate-limit hardening and cooldowns.
     """
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "last_chat_time" not in st.session_state:
+        st.session_state.last_chat_time = 0
 
     # ── Navigator Panel ───────────────────────────────────────────────
     with st.expander("🧭  Navigator — Expert Air Quality Assistant", expanded=bool(st.session_state.chat_history)):
@@ -1177,12 +1138,19 @@ def render_ai_chat(data: dict):
         )
 
         if question:
+            # Cooldown check (5 seconds)
+            time_since_last = time.time() - st.session_state.last_chat_time
+            if time_since_last < 5:
+                st.info(f"⏳ The Navigator is thinking... Please wait {int(5 - time_since_last)}s.")
+                return
+
             api_key = _get_gemini_key()
             with st.spinner("Analyzing data..."):
                 answer = ask_ai(question, data)
 
             st.session_state.chat_history.append({"role": "user", "content": question})
             st.session_state.chat_history.append({"role": "ai", "content": answer})
+            st.session_state.last_chat_time = time.time()
 
             if len(st.session_state.chat_history) > 10:
                 st.session_state.chat_history = st.session_state.chat_history[-10:]

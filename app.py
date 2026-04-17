@@ -443,7 +443,8 @@ def ask_ai(question: str, data: dict) -> str:
     # If the API returned any error indicator, fall back to local expert
     _api_error_indicators = (
         "⚠️", "HTTP 4", "HTTP 5", "unexpected error",
-        "took too long", "unexpected response",
+        "took too long", "unexpected response", "busy right now",
+        "temporarily unavailable"
     )
     if any(ind in response for ind in _api_error_indicators):
         return _local_expert_answer(question, data)

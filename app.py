@@ -1129,7 +1129,13 @@ def render_advisory(category: str, color: str):
         unsafe_allow_html=True,
     )
 
-
+# Define the quick actions list here
+QUICK_ACTIONS = [
+    "What is the 48-hour forecast?",
+    "Why is the AQI high today?",
+    "Is it safe to exercise outside?",
+    "Explain the 'Spring Cliff' effect."
+]
 def render_ai_summary(data: dict):
     """
     Render the AI-generated plain-English summary card.
@@ -1459,13 +1465,7 @@ def main():
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
 
         render_history_chart(history_72h, category)
-# Define the quick actions list here
-        QUICK_ACTIONS = [
-            "What is the 48-hour forecast?",
-            "Why is the AQI high today?",
-            "Is it safe to exercise outside?",
-            "Explain the 'Spring Cliff' effect."
-        ]
+
         # ── AI Chatbox ────────────────────────────────────────────────────
         render_ai_chat(data)
 

@@ -912,7 +912,7 @@ def make_gauge_figure(aqi_value: float, category: str, color: str) -> go.Figure:
                 "ticktext":  ["0", "50", "100", "150", "200", "300", "500"],
                 "tickcolor": "#374151",
                 "tickfont":  {"size": 10, "color": "#6b7280"},
-                "gridcolor": "#1f2937",
+                "tickcolor": "#1f2937",
             },
             "bar": {
                 "color":     color,

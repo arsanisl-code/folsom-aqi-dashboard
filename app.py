@@ -1130,12 +1130,12 @@ def render_advisory(category: str, color: str):
     )
 
 # Define the quick actions list here
-QUICK_ACTIONS = [
-    "What is the 48-hour forecast?",
-    "Why is the AQI high today?",
-    "Is it safe to exercise outside?",
-    "Explain the 'Spring Cliff' effect."
-]
+QUICK_ACTIONS = {
+    " 48h Forecast": "What is the 48-hour forecast for Folsom?",
+    " Health Safety": "Is it safe to exercise outside today based on the current AQI?",
+    " Wildfire Risk": "Are there any current wildfire advection risks in the area?",
+    " Spring Cliff": "Explain the 'Spring Cliff' effect and how it impacts air quality."
+}
 def render_ai_summary(data: dict):
     """
     Render the AI-generated plain-English summary card.

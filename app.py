@@ -1300,6 +1300,7 @@ def render_ai_chat(data: dict):
         # Quick action buttons
         st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
         qa_cols = st.columns(len(QUICK_ACTIONS), gap="small")
+        qa_triggered = None
         for col, (label, _question) in zip(qa_cols, QUICK_ACTIONS.items()):
             with col:
                 st.button(label, key=f"qa_{label}", use_container_width=True)

@@ -19,11 +19,9 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ── Import shared AI layer from backend ──────────────────────────────────────
-# The backend ai_layer.py is the single canonical Gemini integration.
-# The frontend passes its Streamlit-secrets-sourced key via answer_question_with_key
-# so ai_layer.py does not need to know about st.secrets.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
+# ── Import shared AI layer ────────────────────────────────────────────────────
+# ai_layer.py is co-located in the frontend directory so Streamlit Cloud
+# can find it without any sys.path manipulation.
 from ai_layer import answer_question_with_key  # noqa: E402
 
 # ── V6 Model Metadata (loaded once at import) ────────────────────────────────

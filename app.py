@@ -19,10 +19,19 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# ── V6 Model Metadata (loaded once at import) ────────────────────────────────
+# ── Import shared AI layer from backend ──────────────────────────────────────
+# The backend ai_layer.py is the single canonical Gemini integration.
+# The frontend passes its Streamlit-secrets-sourced key via answer_question_with_key
+# so ai_layer.py does not need to know about st.secrets.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
+from ai_layer import answer_question_with_key  # noqa: E402
 
-_V6_METRICS = {}
-_V6_FEATURES = []
+# ── V6 Model Metadata (loaded once at import) ────────────────────────────────
+# Used only by _build_model_accuracy_context() to populate the AI system prompt
+# with live accuracy metrics. Gracefully degrades if files aren't present.
+
+_V6_METRICS: dict = {}
+_V6_FEATURES: list = []
 try:
     _m = Path("models_v6/training_metrics_v6.json")
     if _m.exists():
@@ -31,18 +40,22 @@ try:
     if _f.exists():
         _V6_FEATURES = json.loads(_f.read_text())
 except Exception:
-    pass  # Graceful degradation if files aren't available
+    pass
 
 
-def _build_expert_knowledge() -> str:
-    """Build a compact expert-knowledge block from V6 model metadata."""
+def _build_model_accuracy_context() -> str:
+    """
+    Build a compact model accuracy context block from V6 metadata.
+    Renamed from _build_expert_knowledge to express that this function
+    builds a context block about model accuracy metrics for the AI system
+    prompt, not general expert knowledge.
+    """
     lines = []
-    lines.append("=== V6 MODEL EXPERT KNOWLEDGE ===")
+    lines.append("=== MODEL ACCURACY CONTEXT ===")
     lines.append(f"Architecture: {_V6_METRICS.get('architecture', 'LightGBM V6')}")
     lines.append(f"Total features: {_V6_METRICS.get('total_features', len(_V6_FEATURES))}")
     lines.append("")
 
-    # Accuracy by horizon
     lines.append("ACCURACY BY HORIZON:")
     for h in _V6_METRICS.get("horizons", []):
         lines.append(
@@ -52,18 +65,16 @@ def _build_expert_knowledge() -> str:
             f"CI Width=±{h['avg_width']:.1f}"
         )
 
-    # Pollutants tracked
     lines.append("")
     lines.append("POLLUTANTS TRACKED: PM2.5, PM10, CO (Carbon Monoxide), "
                  "NO2 (Nitrogen Dioxide), O3 (Ozone), Dust, "
                  "AOD (Aerosol Optical Depth from satellite)")
 
-    # Feature groups
-    fire_feats = [f for f in _V6_FEATURES if 'fire' in f]
-    inversion_feats = [f for f in _V6_FEATURES if 'inversion' in f]
+    fire_feats       = [f for f in _V6_FEATURES if 'fire' in f]
+    inversion_feats  = [f for f in _V6_FEATURES if 'inversion' in f]
     stagnation_feats = [f for f in _V6_FEATURES if 'stagnation' in f or 'vent' in f]
-    aqi_feats = [f for f in _V6_FEATURES if f.startswith('aqi_')]
-    weather_feats = [f for f in _V6_FEATURES if any(
+    aqi_feats        = [f for f in _V6_FEATURES if f.startswith('aqi_')]
+    weather_feats    = [f for f in _V6_FEATURES if any(
         f.startswith(p) for p in ['wind_', 'fwd_wind', 'temperature', 'fwd_temperature',
                                    'humidity', 'fwd_humidity', 'pressure', 'fwd_pressure',
                                    'precipitation', 'fwd_precipitation', 'cloud', 'boundary']
@@ -107,8 +118,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
-# ── Constants ─────────────────────────────────────────────────────────────────
 
 API_URL = os.getenv("API_URL", st.secrets.get("API_URL", "http://localhost:8000")
                     if hasattr(st, "secrets") else "http://localhost:8000")
@@ -163,51 +172,7 @@ HORIZON_LABELS = {
     "48h": "48 HOUR FORECAST",
 }
 
-# ── Gemini AI config ──────────────────────────────────────────────────────────
-
-_EXPERT_BLOCK = _build_expert_knowledge()
-
-_GEMINI_BASE_SYSTEM = """\
-You are the **Folsom Navigator** — the expert AI assistant embedded in the \
-Folsom AQI Monitor dashboard. This system is a physics-informed expert \
-assistant built for the 2026 Los Rios STEM Fair.
-
-You have deep knowledge in four areas:
-
-1. CURRENT FORECAST DATA — provided in each request.
-
-2. SYSTEM ARCHITECTURE & ACCURACY — Use the provided expert knowledge block \
-to answer questions about reliability and atmospheric drivers. 
-
-3. AQI HEALTH GUIDANCE (US EPA scale):
-   Good (0–50): Safe for everyone.
-   Moderate (51–100): Unusually sensitive people may be affected.
-   Unhealthy for Sensitive Groups (101–150): Children, elderly, asthma/heart \
-patients should limit prolonged outdoor exertion.
-   Unhealthy (151–200): Everyone should reduce heavy outdoor exertion.
-   Very Unhealthy (201–300): Everyone should avoid prolonged outdoor exertion.
-   Hazardous (301–500): Avoid all outdoor exertion. Stay indoors.
-
-4. CRITICAL PERSONA CONSTRAINTS:
-   - NEVER mention 'V6', 'models', 'LightGBM', or 'machine learning'.
-   - Refer to the system as the 'Navigator' or 'Expert System'.
-   - Re-frame technical metrics: instead of 'MAE', use 'average error margin'. 
-     Instead of 'R-squared' or 'R2', use 'prediction reliability'.
-     Instead of 'Features', use 'Atmospheric factors' or 'Environmental drivers'.
-   - If asked how you work, explain that you use an 'ensemble of physics-informed \
-atmospheric patterns' and 'historical data signatures' to predict air quality.
-   - If data is missing, say: "I don't have access to that specific atmospheric \
-detail from the live system."
-
-Personality: You are concise, precise, and authoritative. You speak like a senior \
-atmospheric scientist who simplifies complex data for the Folsom public.\
-"""
-
-_GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1/models/"
-    "gemini-2.0-flash:generateContent"
-)
-
+# ── AI helper functions ───────────────────────────────────────────────────────
 
 def _get_gemini_key() -> str:
     """Retrieve GEMINI_API_KEY from Streamlit secrets or env."""
@@ -220,82 +185,40 @@ def _get_gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "")
 
 
-def _build_context(data: dict) -> str:
-    """Turn the /forecast JSON into a compact context string for the AI."""
-    current   = data.get("current", {})
-    forecasts = data.get("forecasts", {})
-    location  = data.get("location", {})
-    gen_at    = data.get("generated_at", "unknown")
-    freshness = data.get("data_freshness_minutes", "unknown")
-
-    lines = [
-        f"Location       : {location.get('name', 'Folsom, CA')}",
-        f"Data generated : {gen_at}  (sensor age: {freshness} min)",
-        "",
-        "CURRENT CONDITIONS",
-        f"  AQI            : {current.get('aqi')}",
-        f"  Category       : {current.get('category')}",
-        f"  Primary poll.  : {current.get('primary_pollutant', 'PM2.5')}",
-        f"  Source         : {current.get('source')}",
-        "",
-        "FORECASTS",
-    ]
-    for key, fc in sorted(forecasts.items()):
-        lines.append(
-            f"  {key:>3}  AQI {fc.get('aqi'):>3}  "
-            f"[{fc.get('ci_lo'):>3}–{fc.get('ci_hi'):>3}]  "
-            f"{fc.get('category')}"
-        )
-    return "\n".join(lines)
-
-
-def _call_gemini(prompt: str, api_key: str) -> str:
+def _get_horizon_accuracy(horizon_h: int, forecast_data: dict) -> dict:
     """
-    Call Gemini REST API directly. Returns the text response or a specific error string.
+    Return {"mae": float, "r2": float} for a given horizon from the live
+    forecast payload's model_metadata field.
+
+    Why this exists: the fallback expert answers previously embedded hardcoded
+    accuracy strings (e.g. "≈3.5 AQI units", "0.87") that would go stale
+    whenever models were retrained. This function reads the live values instead,
+    falling back to the hardcoded defaults only when model_metadata is absent.
     """
-    if not api_key:
-        return (
-            "\u26a0\ufe0f GEMINI_API_KEY is not set. "
-            "Add it to Streamlit Cloud Secrets to enable AI responses."
-        )
-    payload = {
-        "system_instruction": {"parts": [{"text": _GEMINI_BASE_SYSTEM + "\n\n" + _EXPERT_BLOCK}]},
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 400},
+    _FALLBACK = {
+        6:  {"mae": 3.5,  "r2": 0.87},
+        12: {"mae": 5.0,  "r2": 0.75},
+        24: {"mae": 7.0,  "r2": 0.60},
+        48: {"mae": 8.5,  "r2": 0.50},
     }
     try:
-        resp = requests.post(
-            f"{_GEMINI_ENDPOINT}?key={api_key}",
-            json=payload,
-            timeout=20,
-        )
-        if not resp.ok:
-            print(f"[ai] Gemini HTTP {resp.status_code}: {resp.text[:500]}", file=sys.stderr)
-            if resp.status_code == 400:
-                return "\u26a0\ufe0f The API key appears to be invalid. Please check Streamlit Cloud Secrets."
-            if resp.status_code == 429:
-                return "The Navigator is busy right now. Please wait a moment and try again."
-            if resp.status_code in (500, 503):
-                return "The AI service is temporarily unavailable. Please try again in a minute."
-            return f"The Navigator encountered an error (HTTP {resp.status_code}). Please try again."
-        result = resp.json()
-        candidates = result.get("candidates", [])
-        if not candidates:
-            print(f"[ai] Gemini returned no candidates: {result}", file=sys.stderr)
-            return "The Navigator received an unexpected response. Please try again."
-        return candidates[0]["content"]["parts"][0]["text"].strip()
-    except requests.exceptions.Timeout:
-        return "The AI took too long to respond. Please try again."
-    except Exception as exc:
-        print(f"[ai] Gemini call failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return "The Navigator encountered an unexpected error. Please try again."
+        horizons = forecast_data["model_metadata"]["horizons"]
+        for h in horizons:
+            if h["horizon_h"] == horizon_h:
+                return {"mae": h["val_mae"], "r2": h["val_r2"]}
+    except (KeyError, TypeError):
+        pass
+    return _FALLBACK.get(horizon_h, {"mae": None, "r2": None})
 
 
-def _local_expert_answer(question: str, data: dict) -> str:
+def _answer_from_live_forecast_data(question: str, data: dict) -> str:
     """
-    Deterministic expert fallback — answers from live forecast data.
-    Used when the Gemini API is unavailable or quota-exceeded.
-    Covers the most common STEM fair questions authoritatively.
+    Deterministic fallback — answers questions from the live forecast payload.
+    Renamed from _local_expert_answer to express that this function answers
+    questions deterministically from the live forecast data, not from a static
+    knowledge base.
+
+    Used when the Gemini API is unavailable or quota-exhausted.
     """
     q = question.lower().strip()
     current   = data.get("current", {})
@@ -329,10 +252,12 @@ def _local_expert_answer(question: str, data: dict) -> str:
 
     # ── 6h forecast ───────────────────────────────────────────────────────
     if "6" in q and any(w in q for w in ["hour", "h forecast", "6h"]):
+        acc = _get_horizon_accuracy(6, data)
+        mae_str = f"≈{acc['mae']} AQI units" if acc['mae'] else "a few AQI units"
         return (
             f"The **6-hour forecast** for Folsom is **{fc6.get('aqi', '?')} AQI** ({fc6.get('category', '?')}), "
             f"with a 90% confidence interval of [{fc6.get('ci_lo', '?')}–{fc6.get('ci_hi', '?')}]. "
-            f"This is the Navigator's most accurate horizon (average error margin ≈ 3.5 AQI units)."
+            f"This is the Navigator's most accurate horizon (average error margin {mae_str})."
         )
 
     # ── 12h forecast ──────────────────────────────────────────────────────
@@ -351,11 +276,13 @@ def _local_expert_answer(question: str, data: dict) -> str:
 
     # ── 48h forecast ──────────────────────────────────────────────────────
     if "48" in q or "two day" in q or "2 day" in q or "day after" in q:
+        acc = _get_horizon_accuracy(48, data)
+        mae_str = f"about {acc['mae']} AQI units" if acc['mae'] else "several AQI units"
         return (
             f"The **48-hour forecast** is **{fc48.get('aqi', '?')} AQI** ({fc48.get('category', '?')}), "
             f"confidence interval [{fc48.get('ci_lo', '?')}–{fc48.get('ci_hi', '?')}] AQI. "
             f"At this horizon the Navigator achieves 95% confidence interval coverage "
-            f"with an average error margin of about 8.5 AQI units."
+            f"with an average error margin of {mae_str}."
         )
 
     # ── Wildfire ──────────────────────────────────────────────────────────
@@ -369,14 +296,20 @@ def _local_expert_answer(question: str, data: dict) -> str:
 
     # ── How it works / accuracy ───────────────────────────────────────────
     if any(w in q for w in ["how", "work", "model", "accurate", "accuracy", "predict", "reliability", "r2", "mae", "error", "confidence"]):
+        acc6  = _get_horizon_accuracy(6,  data)
+        acc48 = _get_horizon_accuracy(48, data)
+        r2_6  = acc6['r2']  if acc6['r2']  else 0.87
+        mae6  = acc6['mae'] if acc6['mae'] else 3.5
+        r2_48 = acc48['r2']  if acc48['r2']  else 0.50
+        mae48 = acc48['mae'] if acc48['mae'] else 8.5
         return (
             "The Folsom Navigator uses an ensemble of **physics-informed atmospheric patterns** "
             "trained on 5 years of local air quality, weather, and wildfire data. "
             "It integrates thermal inversion strength, boundary layer height, wind ventilation, "
             "fire advection, and pollutant persistence to produce forecasts at 6, 12, 24, and 48 hours. "
-            "Short-horizon (6h) forecasts achieve a prediction reliability of 0.87 with "
-            "an average error margin of ≈3.5 AQI units. "
-            "At 48h, reliability is 0.50 with ≈8.5 AQI units average error — "
+            f"Short-horizon (6h) forecasts achieve a prediction reliability of {r2_6} with "
+            f"an average error margin of ≈{mae6} AQI units. "
+            f"At 48h, reliability is {r2_48} with ≈{mae48} AQI units average error — "
             "comparable to leading national air quality forecast systems."
         )
 
@@ -427,27 +360,24 @@ def _local_expert_answer(question: str, data: dict) -> str:
 def ask_ai(question: str, data: dict) -> str:
     """
     Two-tier AI answer:
-      1. Try Gemini API (full language model response).
-      2. Fall back to local expert engine if API unavailable/quota exhausted.
+      1. Try Gemini API via the shared backend ai_layer (answer_question_with_key).
+      2. Fall back to _answer_from_live_forecast_data if API is unavailable.
     """
     api_key = _get_gemini_key()
 
-    # No key configured — go straight to local expert
     if not api_key:
-        return _local_expert_answer(question, data)
+        return _answer_from_live_forecast_data(question, data)
 
-    context = _build_context(data)
-    prompt  = f"Current forecast data:\n{context}\n\nUser question: {question.strip()}"
-    response = _call_gemini(prompt, api_key)
+    response = answer_question_with_key(question, data, api_key)
 
-    # If the API returned any error indicator, fall back to local expert
-    _api_error_indicators = (
+    # If the shared layer returned any error indicator, fall back to local expert
+    _API_ERROR_INDICATORS = (
         "⚠️", "HTTP 4", "HTTP 5", "unexpected error",
         "took too long", "unexpected response", "busy right now",
-        "temporarily unavailable"
+        "temporarily unavailable",
     )
-    if any(ind in response for ind in _api_error_indicators):
-        return _local_expert_answer(question, data)
+    if any(ind in response for ind in _API_ERROR_INDICATORS):
+        return _answer_from_live_forecast_data(question, data)
 
     return response
 

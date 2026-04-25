@@ -834,11 +834,9 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
     times = [h.get("timestamp") for h in history_72h if h.get("timestamp")]
     actuals = [h.get("actual_aqi") for h in history_72h if h.get("timestamp")]
     
-    # Extract horizons
+    # Extract horizons (Simplified to only show Short-term and Long-term)
     h_data = {
         "6h":  {"vals": [h.get("forecast_6h") for h in history_72h if h.get("timestamp")], "color": "#3b82f6"},
-        "12h": {"vals": [h.get("forecast_12h") for h in history_72h if h.get("timestamp")], "color": "#8b5cf6"},
-        "24h": {"vals": [h.get("forecast_24h") for h in history_72h if h.get("timestamp")], "color": "#f59e0b"},
         "48h": {"vals": [h.get("forecast_48h") for h in history_72h if h.get("timestamp")], "color": "#ef4444"},
     }
 

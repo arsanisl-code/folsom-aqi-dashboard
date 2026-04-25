@@ -878,29 +878,27 @@ def make_gauge_figure(aqi_value: float, category: str, color: str) -> go.Figure:
 # ── History chart ─────────────────────────────────────────────────────────────
 
 def make_history_chart(history_72h: list, category: str) -> go.Figure:
-    """Build the 72-hour actual vs. forecast Plotly line chart."""
-    color      = get_aqi_color(category)
-    color_band = get_aqi_rgba(category, 0.12)
+    """Build the 72-hour actual vs. 4 horizons Plotly line chart."""
+    color_cat = get_aqi_color(category)
 
-    times, actuals, forecasts, ci_lo, ci_hi = [], [], [], [], []
-    for h in history_72h:
-        ts = h.get("timestamp")
-        if not ts:
-            continue
-        times.append(ts)
-        actuals.append(h.get("actual_aqi"))
-        forecasts.append(h.get("forecast_aqi"))
-        ci_lo.append(h.get("ci_lo"))
-        ci_hi.append(h.get("ci_hi"))
+    # Prepare containers
+    times = [h.get("timestamp") for h in history_72h if h.get("timestamp")]
+    actuals = [h.get("actual_aqi") for h in history_72h if h.get("timestamp")]
+    
+    # Extract horizons
+    h_data = {
+        "6h":  {"vals": [h.get("forecast_6h") for h in history_72h if h.get("timestamp")], "color": "#3b82f6"},
+        "12h": {"vals": [h.get("forecast_12h") for h in history_72h if h.get("timestamp")], "color": "#8b5cf6"},
+        "24h": {"vals": [h.get("forecast_24h") for h in history_72h if h.get("timestamp")], "color": "#f59e0b"},
+        "48h": {"vals": [h.get("forecast_48h") for h in history_72h if h.get("timestamp")], "color": "#ef4444"},
+    }
 
-    has_actuals   = any(v is not None for v in actuals)
-    has_forecasts = any(v is not None for v in forecasts)
-
-    y_vals = [v for v in actuals + forecasts + ci_hi if v is not None]
+    y_vals = [v for v in actuals + h_data["6h"]["vals"] + h_data["48h"]["vals"] if v is not None]
     y_max  = max(200, int(max(y_vals) * 1.15) + 10) if y_vals else 200
 
     fig = go.Figure()
 
+    # Background color bands
     for lo, hi_b, rgba in [
         (0,   50,  "rgba(0,228,0,0.06)"),
         (50,  100, "rgba(255,255,0,0.06)"),
@@ -908,46 +906,36 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
         (150, 200, "rgba(255,0,0,0.06)"),
     ]:
         if lo < y_max:
-            fig.add_hrect(y0=lo, y1=min(hi_b, y_max),
-                          fillcolor=rgba, line_width=0, layer="below")
+            fig.add_hrect(y0=lo, y1=min(hi_b, y_max), fillcolor=rgba, line_width=0, layer="below")
 
-    if has_forecasts and any(v is not None for v in ci_hi):
-        fig.add_trace(go.Scatter(
-            x=times + times[::-1],
-            y=ci_hi + ci_lo[::-1],
-            fill="toself",
-            fillcolor=color_band,
-            line=dict(width=0),
-            showlegend=False,
-            hoverinfo="skip",
-            name="90% CI",
-        ))
+    # Plot horizons (Solid lines)
+    for label, info in h_data.items():
+        if any(v is not None for v in info["vals"]):
+            fig.add_trace(go.Scatter(
+                x=times, y=info["vals"],
+                name=f"{label} Forecast",
+                line=dict(color=info["color"], width=2),
+                mode="lines",
+                connectgaps=True,
+                hovertemplate=f"{label}: %{{y:.0f}} AQI<extra></extra>",
+            ))
 
-    if has_forecasts:
-        fig.add_trace(go.Scatter(
-            x=times, y=forecasts,
-            name="6h Forecast",
-            line=dict(color=color, width=2, dash="dot"),
-            mode="lines",
-            connectgaps=False,
-            hovertemplate="%{x|%b %-d %-I %p}<br>Forecast: %{y:.0f} AQI<extra></extra>",
-        ))
-
-    if has_actuals:
+    # Plot Actual (Dotted line)
+    if any(v is not None for v in actuals):
         fig.add_trace(go.Scatter(
             x=times, y=actuals,
             name="Actual AQI",
-            line=dict(color="#f9fafb", width=2.5),
+            line=dict(color="#f9fafb", width=2.5, dash="dot"),
             mode="lines",
-            connectgaps=False,
-            hovertemplate="%{x|%b %-d %-I %p}<br>Actual: %{y:.0f} AQI<extra></extra>",
+            connectgaps=True,
+            hovertemplate="Actual: %{y:.0f} AQI<extra></extra>",
         ))
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#111827",
         margin=dict(l=10, r=10, t=20, b=20),
-        height=260,
+        height=280,
         font={"color": "#9ca3af", "family": "Space Grotesk", "size": 11},
         legend=dict(
             orientation="h",
@@ -956,7 +944,7 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
             bgcolor="rgba(17,24,39,0.9)",
             bordercolor="#1f2937",
             borderwidth=1,
-            font=dict(color="#9ca3af", size=10),
+            font=dict(color="#9ca3af", size=9),
         ),
         xaxis=dict(
             tickformat="%b %-d\n%-I%p",
@@ -973,14 +961,8 @@ def make_history_chart(history_72h: list, category: str) -> go.Figure:
             showgrid=True,
             zeroline=False,
             tickfont=dict(size=9, color="#6b7280"),
-            title=dict(text="AQI", font=dict(size=10, color="#6b7280")),
         ),
         hovermode="x unified",
-        hoverlabel=dict(
-            bgcolor="#1f2937",
-            bordercolor="#374151",
-            font=dict(color="#f9fafb", size=11),
-        ),
     )
     return fig
 

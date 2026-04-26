@@ -1056,7 +1056,12 @@ def render_info_chips(current: dict, generated_at: str):
     ts_str    = current.get("timestamp", generated_at)
     pollutant = current.get("primary_pollutant", "—")
     source    = current.get("source", "—")
-    src_label = source if source != "—" else "Open-Meteo Model"
+    if "AirNow" in source:
+        src_label = "AirNow Sensor"
+    elif "Open-Meteo" in source:
+        src_label = "Open-Meteo Model"
+    else:
+        src_label = source
 
     try:
         gen_ts  = datetime.fromisoformat(generated_at)
